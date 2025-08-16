@@ -1,8 +1,7 @@
 [project]
 name = "utt-ai-arena"
 version = "0.1.0"
-description = "
-Ultimate Tic-Tac-Toe with multiple AI bots — play against bots or watch them compete using different algorithms like Minimax, Alpha-Beta Pruning, MCTS, Reinforcement Learning, and heuristic methods."
+description = ""
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

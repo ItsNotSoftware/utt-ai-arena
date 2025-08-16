@@ -1,11 +1,20 @@
 from enum import IntEnum
-from typing import Callable, Union
+from typing import Callable, Union, Any
+from dataclasses import dataclass
+from typing import Tuple
 
 
 class Piece(IntEnum):
     EMPTY = 0
     O = -1
     X = 1
+
+
+@dataclass
+class Move:
+    piece: Piece
+    outer: Tuple[int, int]  # outer board position select
+    inner: Tuple[int, int]  # inner board position select
 
 
 class BoardState(IntEnum):
@@ -21,19 +30,13 @@ class Board:
     def __init__(
         self, piece_factory: Callable[[], Union[Piece, "Board"]] = lambda: Piece.EMPTY
     ) -> None:
-        """
-        Initializes a board with a 3x3 grid of pieces or inner boards.
-
-        Args:
-            piece_factory (Callable[[], Union[Piece, "Board"]]): A factory function that
-                generates a new piece or inner board. Defaults to a function that returns Piece.EMPTY.
-        """
+        """Initializes a board with a 3x3 grid of pieces or inner boards."""
 
         # Create a 3x3 grid with independent values generated from the factory
         self.board = [[piece_factory() for _ in range(3)] for _ in range(3)]
         self.board_state = BoardState.NOT_FINISHED
 
-    def __getitem__(self, idx: int) -> Union[Piece, "Board"]:
+    def __getitem__(self, idx: int) -> Any:
         return self.board[idx]
 
     def __setitem__(self, idx: int, value) -> None:
@@ -46,9 +49,6 @@ class Board:
 
         If this board isn't finished yet, it returns Piece.EMPTY — just like an empty cell.
         This makes it easier to compute the main board's state with the same function as inner boards without special cases.
-
-        Returns:
-            Piece: The current state of this board, interpreted as a Piece.
         """
         match self.board_state:
             case BoardState.X_WON:
@@ -59,17 +59,7 @@ class Board:
                 return Piece.EMPTY
 
     def place_piece(self, l: int, c: int, p: Piece) -> bool:
-        """
-        Places a piece on the board at the specified location.
-
-        Args:
-            l (int): The row index (0-2).
-            c (int): The column index (0-2).
-            p (Piece): The piece to place (X or O).
-
-        Returns:
-            bool: True if the piece was placed successfully, False if the move is invalid.
-        """
+        """Places a piece on the board at the specified location."""
 
         # Valid move
         if (
@@ -79,15 +69,13 @@ class Board:
             self.board[l][c] = p
             self.board_state = self.get_game_state()
             return True
+
         return False
 
     def get_game_state(self) -> BoardState:
         """
         Checks the current state of the board to determine if the game is finished, and if so,
         whether X or O has won, or if it's a draw.
-
-        Returns:
-            BoardState: The current state of the board.
         """
 
         x_won = 3
@@ -118,5 +106,5 @@ class Board:
 
 
 def get_board() -> Board:
-    """Returns a main board composed of 9 fresh inner boards."""
+    """Returns a main board composed of 9 inner boards."""
     return Board(piece_factory=lambda: Board())

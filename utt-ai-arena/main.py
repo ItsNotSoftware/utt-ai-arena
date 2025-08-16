@@ -1,5 +1,8 @@
+import random
 import pygame
-from board import get_board, Piece, BoardState, Board
+from board import get_board, Piece, BoardState, Board, Piece
+from player import Move, Player, HumanPlayer, set_screen_size
+import time
 
 # --- Constants ---
 SCREEN_SIZE = 1280
@@ -12,16 +15,7 @@ clock = pygame.time.Clock()
 
 
 def render_inner_board(board: Board, size: int) -> pygame.Surface:
-    """
-    Renders a single inner board of the Tic Tac Toe game.
-
-    Args:
-        board (Board): The inner board to render.
-        size (int): The size of the inner board surface.
-
-    Returns:
-        pygame.Surface: A surface containing the rendered inner board.
-    """
+    """Renders a single inner board of the Tic Tac Toe game."""
     surface = pygame.Surface((size, size))
     surface.fill("white")
 
@@ -79,13 +73,7 @@ def render_inner_board(board: Board, size: int) -> pygame.Surface:
 
 
 def draw_main_board(screen: pygame.Surface, board: Board) -> None:
-    """
-    Draws the main board composed of 9 inner boards.
-
-    Args:
-        screen (pygame.Surface): The surface to draw on.
-        board (Board): The main board containing 9 inner boards.
-    """
+    """Draws the main board composed of 9 inner boards."""
 
     inner_size = SCREEN_SIZE // 3
     line_color = pygame.Color("black")
@@ -159,10 +147,30 @@ def draw_main_board(screen: pygame.Surface, board: Board) -> None:
         )
 
 
+def make_move(board: Board, move: Move) -> bool:
+    piece = move.piece
+    out_m, in_m = move.outer, move.inner
+
+    l, c = out_m
+    inner_b = board[l][c]
+
+    if inner_b.get_game_state() != BoardState.NOT_FINISHED:
+        return False
+
+    l, c = in_m
+    status = inner_b.place_piece(l, c, piece)
+    return status
+
+
 def game_loop() -> None:
     """Main game loop that handles events and renders the game state."""
 
     board = get_board()
+
+    # TODO player selection
+    p1 = HumanPlayer(Piece.X)
+    p2 = HumanPlayer(Piece.O)
+    player = p1
 
     while True:
         for event in pygame.event.get():
@@ -172,11 +180,23 @@ def game_loop() -> None:
         screen.fill("white")
         draw_main_board(screen, board)
 
+        move = player.get_move(board)
+
+        if move:
+            # repeat loop if an invalid move is given
+            if not make_move(board, move):
+                print("Invalid move!")
+                continue
+
+            player = p1 if player == p2 else p2  # change player
+            time.sleep(0.2)  # Give time for player to unclick mouse
+
         pygame.display.flip()
         clock.tick(60)
 
 
 def main() -> None:
+    set_screen_size(SCREEN_SIZE)
     game_loop()
     pygame.quit()
 
