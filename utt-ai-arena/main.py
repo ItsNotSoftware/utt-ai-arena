@@ -155,6 +155,7 @@ def make_move(board: Board, move: Move) -> bool:
     inner_b = board[l][c]
 
     if inner_b.get_game_state() != BoardState.NOT_FINISHED:
+        print(inner_b.get_game_state())
         return False
 
     l, c = in_m

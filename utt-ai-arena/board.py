@@ -18,7 +18,7 @@ class Move:
 
 
 class BoardState(IntEnum):
-    NOT_FINISHED = 1
+    NOT_FINISHED = 0
     DRAW = 1
     O_WON = 2
     X_WON = 3
@@ -73,36 +73,33 @@ class Board:
         return False
 
     def get_game_state(self) -> BoardState:
-        """
-        Checks the current state of the board to determine if the game is finished, and if so,
-        whether X or O has won, or if it's a draw.
-        """
-
         x_won = 3
         o_won = -3
-        tot_sum = 0  # if it reaches 9 board is full
 
         for i in range(3):
             line_sum = sum(self.board[i][j].value for j in range(3))
             col_sum = sum(self.board[j][i].value for j in range(3))
-            tot_sum += abs(line_sum)
-
             if line_sum == x_won or col_sum == x_won:
                 return BoardState.X_WON
-            elif line_sum == o_won or col_sum == o_won:
+            if line_sum == o_won or col_sum == o_won:
                 return BoardState.O_WON
 
+        # diagonals
         diag1 = self.board[0][0].value + self.board[1][1].value + self.board[2][2].value
         diag2 = self.board[2][0].value + self.board[1][1].value + self.board[0][2].value
-
         if diag1 == x_won or diag2 == x_won:
             return BoardState.X_WON
-        elif diag1 == o_won or diag2 == o_won:
+        if diag1 == o_won or diag2 == o_won:
             return BoardState.O_WON
-        elif tot_sum == 9:  # all cells filled
-            return BoardState.DRAW
 
-        return BoardState.NOT_FINISHED
+        # empty?
+        def is_empty(cell) -> bool:
+            if isinstance(cell, Piece):
+                return cell == Piece.EMPTY
+            return cell.board_state == BoardState.NOT_FINISHED
+
+        any_empty = any(is_empty(self.board[r][c]) for r in range(3) for c in range(3))
+        return BoardState.NOT_FINISHED if any_empty else BoardState.DRAW
 
 
 def get_board() -> Board:

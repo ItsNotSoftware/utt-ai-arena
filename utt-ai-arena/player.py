@@ -23,16 +23,19 @@ class Player(ABC):
 
 class HumanPlayer(Player):
     def get_move(self, board: Board) -> Move | None:
-        if not mouse.get_pressed()[0]:
+        down = mouse.get_pressed()[0]
+        if not down:
+            self._prev_down = False
             return None
+        if self._prev_down:
+            return None  # still held
+        self._prev_down = True
 
         x, y = mouse.get_pos()
-
         big_square_sz = screen_size / 3
         small_square_sz = screen_size / 9
         out_l = int(y // big_square_sz)
         out_c = int(x // big_square_sz)
         in_l = int(y // small_square_sz) % 3
         in_c = int(x // small_square_sz) % 3
-
         return Move(self.piece, (out_l, out_c), (in_l, in_c))
