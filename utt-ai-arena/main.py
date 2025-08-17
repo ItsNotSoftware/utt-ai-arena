@@ -1,7 +1,7 @@
-import random
+from typing import Tuple, Any
 import pygame
 from board import get_board, Piece, BoardState, Board, Piece
-from player import Move, Player, HumanPlayer, set_screen_size
+from player import Move, HumanPlayer, set_screen_size
 import time
 
 # --- Constants ---
@@ -147,9 +147,13 @@ def draw_main_board(screen: pygame.Surface, board: Board) -> None:
         )
 
 
-def make_move(board: Board, move: Move) -> bool:
+def make_move(board: Board, move: Move, restriction: Tuple | None) -> bool:
     piece = move.piece
     out_m, in_m = move.outer, move.inner
+
+    # Check for restricted move
+    if restriction is not None and out_m != restriction:
+        return False
 
     l, c = out_m
     inner_b = board[l][c]
@@ -168,10 +172,10 @@ def game_loop() -> None:
 
     board = get_board()
 
-    # TODO player selection
     p1 = HumanPlayer(Piece.X)
     p2 = HumanPlayer(Piece.O)
     player = p1
+    restriction = None  # Outer board restriction
 
     while True:
         for event in pygame.event.get():
@@ -185,9 +189,13 @@ def game_loop() -> None:
 
         if move:
             # repeat loop if an invalid move is given
-            if not make_move(board, move):
-                print("Invalid move!")
+            if not make_move(board, move, restriction):
                 continue
+
+            # Update restriction  based on state
+            state = board[move.inner[0]][move.inner[1]].get_game_state()
+            restriction = move.inner if state == BoardState.NOT_FINISHED else None
+            print(restriction)
 
             player = p1 if player == p2 else p2  # change player
             time.sleep(0.2)  # Give time for player to unclick mouse
