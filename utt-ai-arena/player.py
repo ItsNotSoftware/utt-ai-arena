@@ -1,7 +1,17 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
-from board import Board, Piece, Move, legal_moves, BoardState, swap_piece
+from typing import Tuple
 from pygame import mouse
 import math
+
+from board import (
+    Board,
+    BoardState,
+    Move,
+    Piece,
+    legal_moves,
+    swap_piece,
+)
 
 # Layout (set from main)
 _screen_w = 0
@@ -14,12 +24,15 @@ _board_top = 0
 def set_layout(
     screen_w: int, screen_h: int, board_size: int, board_left: int, board_top: int
 ) -> None:
+    """Sets layout info for input mapping."""
     global _screen_w, _screen_h, _board_size, _board_left, _board_top
     _screen_w, _screen_h = screen_w, screen_h
     _board_size, _board_left, _board_top = board_size, board_left, board_top
 
 
 class Player(ABC):
+    """Abstract player."""
+
     def __init__(self, piece: Piece, depth_limit: int = 0) -> None:
         self.piece = piece
         self.depth_limit = depth_limit
@@ -33,12 +46,15 @@ class Player(ABC):
 
 
 class HumanPlayer(Player):
+    """Mouse-based human."""
+
     def __init__(self, piece: Piece, depth_limit: int = 0) -> None:
-        super().__init__(piece)
+        super().__init__(piece, depth_limit)
         self._prev_down = False
         self.name = "HumanPlayer"
 
     def get_move(self, board: Board) -> Move | None:
+        # single click
         down = mouse.get_pressed()[0]
         if not down:
             self._prev_down = False
@@ -48,6 +64,7 @@ class HumanPlayer(Player):
         self._prev_down = True
 
         x, y = mouse.get_pos()
+
         # Must be inside the board square
         if not (
             _board_left <= x < _board_left + _board_size
@@ -55,6 +72,7 @@ class HumanPlayer(Player):
         ):
             return None
 
+        # local coords
         lx = x - _board_left
         ly = y - _board_top
 
@@ -70,15 +88,20 @@ class HumanPlayer(Player):
 
 
 class MinmaxPlayer(Player):
-    def __init__(
-        self, piece: Piece, depth_limit: int = 0, use_heuristics: bool = False
-    ) -> None:
-        super().__init__(piece)
-        self._prev_down = False
-        self.name = "Minmax" if not use_heuristics else "HeuristicMinmax"
+    """Pure minimax."""
 
-    @staticmethod
-    def minmax(piece: Piece, board: Board, depth: int, depth_limit: int) -> float:
+    def __init__(self, piece: Piece, depth_limit: int = 0) -> None:
+        super().__init__(piece, depth_limit=depth_limit)
+        self.name = "Minmax"
+
+    def _minmax(
+        self,
+        piece: Piece,
+        board: Board,
+        depth: int,
+        depth_limit: int,
+    ) -> float:
+        # Terminal?
         if board.board_state == BoardState.DRAW:
             return 0.0
         elif board.board_state == BoardState.X_WON:
@@ -86,9 +109,53 @@ class MinmaxPlayer(Player):
         elif board.board_state == BoardState.O_WON:
             return -math.inf
 
-        piece = swap_piece(piece)
-        moves = legal_moves()
+        # Depth limit
+        if depth == depth_limit:
+            return 0.0
+
+        # Children
+        moves = legal_moves(board, piece, board.restriction)
+        if not moves:
+            return 0.0
+
+        maximizing = piece == Piece.X
+        best = -math.inf if maximizing else math.inf
+
+        for m in moves:
+            b = board.clone()
+            ok = b.make_move(m)
+            if not ok:
+                continue  # should not happen with legal_moves
+            score = self._minmax(swap_piece(piece), b, depth + 1, depth_limit)
+            if maximizing:
+                if score > best:
+                    best = score
+            else:
+                if score < best:
+                    best = score
+
+        return best
 
     def get_move(self, board: Board) -> Move | None:
+        moves = legal_moves(board, self.piece, board.restriction)
+        if not moves:
+            return None
 
-        pass
+        maximizing = self.piece == Piece.X
+        best_score = -math.inf if maximizing else math.inf
+        best_move: Move | None = None
+
+        for m in moves:
+            b = board.clone()
+            ok = b.make_move(m)
+            if not ok:
+                continue
+            score = self._minmax(swap_piece(self.piece), b, 1, self.depth_limit)
+            if maximizing:
+                if best_move is None or score > best_score:
+                    best_score, best_move = score, m
+            else:
+                if best_move is None or score < best_score:
+                    best_score, best_move = score, m
+
+        return best_move

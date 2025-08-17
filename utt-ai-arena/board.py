@@ -1,8 +1,7 @@
 from __future__ import annotations
 from enum import IntEnum
-from typing import Callable, Union, Any
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Callable, Union, Any, Tuple, List
 
 
 class Piece(IntEnum):
@@ -32,10 +31,11 @@ class Board:
         self, piece_factory: Callable[[], Union[Piece, "Board"]] = lambda: Piece.EMPTY
     ) -> None:
         """Initializes a board with a 3x3 grid of pieces or inner boards."""
-
-        # Create a 3x3 grid with independent values generated from the factory
-        self.board = [[piece_factory() for _ in range(3)] for _ in range(3)]
-        self.board_state = BoardState.NOT_FINISHED
+        self.board: List[List[Union[Piece, "Board"]]] = [
+            [piece_factory() for _ in range(3)] for _ in range(3)
+        ]
+        self.board_state: BoardState = BoardState.NOT_FINISHED
+        self.restriction: Tuple[int, int] | None = None  # next required outer (or None)
 
     def __getitem__(self, idx: int) -> Any:
         return self.board[idx]
@@ -43,14 +43,21 @@ class Board:
     def __setitem__(self, idx: int, value) -> None:
         self.board[idx] = value
 
-    @property
-    def value(self):
-        """(⚆ᗝ⚆)
-        Super cool function that lets the main board treat inner boards like regular pieces.
+    def _update_restriction(self, move: Move | None) -> None:
+        """Updates the next restriction after a move."""
+        if move is None:
+            return
+        target = self.board[move.inner[0]][move.inner[1]]
+        if isinstance(target, Piece):
+            self.restriction = None
+            return
+        self.restriction = (
+            move.inner if target.get_game_state() == BoardState.NOT_FINISHED else None
+        )
 
-        If this board isn't finished yet, it returns Piece.EMPTY — just like an empty cell.
-        This makes it easier to compute the main board's state with the same function as inner boards without special cases.
-        """
+    @property
+    def value(self) -> Piece:
+        """(⚆ᗝ⚆) Supper cool hack to treat inner boards like pieces: X if X won, O if O won, EMPTY otherwise."""
         match self.board_state:
             case BoardState.X_WON:
                 return Piece.X
@@ -61,8 +68,6 @@ class Board:
 
     def place_piece(self, l: int, c: int, p: Piece) -> bool:
         """Places a piece on the board at the specified location."""
-
-        # Valid move
         if (
             self.board[l][c] == Piece.EMPTY
             and self.board_state == BoardState.NOT_FINISHED
@@ -70,13 +75,35 @@ class Board:
             self.board[l][c] = p
             self.board_state = self.get_game_state()
             return True
-
         return False
 
+    def make_move(self, move: Move) -> bool:
+        """Applies a move. Enforces restriction and inner state. Updates next restriction."""
+        out_rc, in_rc = move.outer, move.inner
+
+        # restriction (None means free choice)
+        if self.restriction is not None and out_rc != self.restriction:
+            return False
+
+        # inner must be playable
+        inner = self.board[out_rc[0]][out_rc[1]]
+        if inner.get_game_state() != BoardState.NOT_FINISHED:
+            return False
+
+        # place
+        ok = inner.place_piece(in_rc[0], in_rc[1], move.piece)
+        if ok:
+            self._update_restriction(move)
+            # refresh main board state (inner .value may have changed)
+            self.board_state = self.get_game_state()
+        return ok
+
     def get_game_state(self) -> BoardState:
+        """Computes the state of this board (win/draw/playing)."""
         x_won = 3
         o_won = -3
 
+        # lines + columns
         for i in range(3):
             line_sum = sum(self.board[i][j].value for j in range(3))
             col_sum = sum(self.board[j][i].value for j in range(3))
@@ -94,7 +121,7 @@ class Board:
             return BoardState.O_WON
 
         # empty?
-        def is_empty(cell) -> bool:
+        def is_empty(cell: Union[Piece, "Board"]) -> bool:
             if isinstance(cell, Piece):
                 return cell == Piece.EMPTY
             return cell.board_state == BoardState.NOT_FINISHED
@@ -103,19 +130,16 @@ class Board:
         return BoardState.NOT_FINISHED if any_empty else BoardState.DRAW
 
     def clone(self) -> Board:
-        """Returns a deep copy of this board, including its inner boards or pieces."""
-
+        """Deep copy (keeps inner boards and restriction)."""
         new_board = Board(piece_factory=lambda: Piece.EMPTY)
         new_board.board_state = self.board_state
-
+        new_board.restriction = self.restriction
         for i in range(3):
             for j in range(3):
                 cell = self.board[i][j]
-                if isinstance(cell, Board):
-                    new_board.board[i][j] = cell.clone()
-                else:
-                    new_board.board[i][j] = cell
-
+                new_board.board[i][j] = (
+                    cell.clone() if isinstance(cell, Board) else cell
+                )
         return new_board
 
 
@@ -124,9 +148,14 @@ def get_board() -> Board:
     return Board(piece_factory=lambda: Board())
 
 
-def legal_moves(board, piece, restriction) -> list[Move]:
-    moves = []
-    if restriction is None:
+def legal_moves(
+    board: Board, piece: Piece, restriction: Tuple[int, int] | None = None
+) -> list[Move]:
+    """All valid moves given a restriction (defaults to board.restriction)."""
+    moves: list[Move] = []
+    use_restr = board.restriction if restriction is None else restriction
+
+    if use_restr is None:
         outers = [
             (R, C)
             for R in range(3)
@@ -134,17 +163,18 @@ def legal_moves(board, piece, restriction) -> list[Move]:
             if board[R][C].get_game_state() == BoardState.NOT_FINISHED
         ]
     else:
-        outers = (
-            [restriction]
-            if board[restriction[0]][restriction[1]].get_game_state()
+        if (
+            board[use_restr[0]][use_restr[1]].get_game_state()
             == BoardState.NOT_FINISHED
-            else [
+        ):
+            outers = [use_restr]
+        else:
+            outers = [
                 (R, C)
                 for R in range(3)
                 for C in range(3)
                 if board[R][C].get_game_state() == BoardState.NOT_FINISHED
             ]
-        )
 
     for R, C in outers:
         inner = board[R][C]
@@ -156,9 +186,5 @@ def legal_moves(board, piece, restriction) -> list[Move]:
 
 
 def swap_piece(p: Piece) -> Piece:
+    """Swap X/O."""
     return Piece.X if p == Piece.O else Piece.O
-
-
-def get_restriction(board: Board, move: Move) -> Tuple[int, int] | None:
-    target = board[move.inner[0]][move.inner[1]]
-    return move.inner if target.get_game_state() == BoardState.NOT_FINISHED else None
