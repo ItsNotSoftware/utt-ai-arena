@@ -1,211 +1,324 @@
-from typing import Tuple, Any
-import pygame
-from board import get_board, Piece, BoardState, Board, Piece
-from player import Move, HumanPlayer, set_screen_size
+from __future__ import annotations
+
 import time
+from typing import Tuple
 
-# --- Constants ---
+import pygame
+
+from board import Board, BoardState, Piece, get_board
+from player import HumanPlayer, set_layout
+
+# --- constants ---
 SCREEN_SIZE = 1280
-MARGIN = 20
+STATUS_BAR_H = 110
+HEADER_H = 28  # small top header for column numbers
+BOARD_SIZE = SCREEN_SIZE - STATUS_BAR_H - HEADER_H
+BOARD_LEFT = (SCREEN_SIZE - BOARD_SIZE) // 2
+BOARD_TOP = HEADER_H  # push board down to make room for header
+HEADER_H = 28  # small top header for column numbers
+SIDEBAR_W = 28  # small left sidebar for row letters
 
-# --- Setup ---
+
+# --- colors ---
+BG = pygame.Color(250, 251, 255)
+BOARD_BG = pygame.Color(255, 255, 255)
+BAR_BG = pygame.Color(243, 245, 250)
+BORDER = pygame.Color(30, 30, 30)
+LINE_COLOR = pygame.Color(50, 50, 55)
+X_COLOR = pygame.Color(210, 30, 30)
+O_COLOR = pygame.Color(25, 80, 220)
+LBL_COLOR = pygame.Color(90, 95, 110)
+WARN_COLOR = pygame.Color(200, 30, 30)
+
+# --- grid thickness ---
+GRID_THIN = 2
+DIV_W = 6
+INNER_MARGIN = 16  # margin inside each inner board
+
+# --- fonts ---
+FONT = None
+FONT_BOLD = None
+
+# --- setup ---
 pygame.init()
 screen = pygame.display.set_mode((SCREEN_SIZE, SCREEN_SIZE))
 clock = pygame.time.Clock()
+pygame.display.set_caption("Ultimate Tic-Tac-Toe")
+
+FONT = pygame.font.SysFont(None, 32)
+FONT_BOLD = pygame.font.SysFont(None, 40)
+
+
+def idx_to_label(rc: Tuple[int, int]) -> str:
+    """Convert (row, col) -> label A1..C3."""
+    r, c = rc
+    return f"{chr(65 + r)}{c + 1}"
 
 
 def render_inner_board(board: Board, size: int) -> pygame.Surface:
-    """Renders a single inner board of the Tic Tac Toe game."""
+    """Renders a single inner board with margins."""
     surface = pygame.Surface((size, size))
-    surface.fill("white")
+    surface.fill(BOARD_BG)
 
-    cell_size = size // 3
-    line_color = pygame.Color("black")
-    x_color = pygame.Color("red")
-    o_color = pygame.Color("blue")
+    cell = size // 3
+    m = INNER_MARGIN
+    end = size - INNER_MARGIN
 
-    # Draw the 2 vertical and 2 horizontal grid lines
+    # draw thin grid lines with margins
     for i in range(1, 3):
-        x = i * cell_size
-        pygame.draw.line(surface, line_color, (x, MARGIN), (x, size - MARGIN), width=3)
-        pygame.draw.line(surface, line_color, (MARGIN, x), (size - MARGIN, x), width=3)
+        x = i * cell
+        y = i * cell
+        pygame.draw.line(
+            surface, LINE_COLOR, (x, m), (x, end), width=GRID_THIN
+        )  # vertical
+        pygame.draw.line(
+            surface, LINE_COLOR, (m, y), (end, y), width=GRID_THIN
+        )  # horizontal
 
-    # Draw each piece in its cell
+    # draw pieces
     for i in range(3):
         for j in range(3):
             piece = board[i][j]
             if piece == Piece.EMPTY:
                 continue
-
-            # Center of this cell
-            cx = j * cell_size + cell_size // 2
-            cy = i * cell_size + cell_size // 2
-            # How far from the center the strokes/radius go
-            pad = cell_size // 2 - MARGIN
-
+            cx = j * cell + cell // 2
+            cy = i * cell + cell // 2
+            pad = cell // 2 - max(10, m - 2)
             if piece == Piece.X:
-                # draw two crossing lines
                 pygame.draw.line(
                     surface,
-                    x_color,
+                    X_COLOR,
                     (cx - pad, cy - pad),
                     (cx + pad, cy + pad),
                     width=6,
                 )
                 pygame.draw.line(
                     surface,
-                    x_color,
+                    X_COLOR,
                     (cx - pad, cy + pad),
                     (cx + pad, cy - pad),
                     width=6,
                 )
-            else:  # Piece.O
-                # draw circle
-                pygame.draw.circle(
-                    surface,
-                    o_color,
-                    (cx, cy),
-                    pad,
-                    width=6,
-                )
+            else:
+                pygame.draw.circle(surface, O_COLOR, (cx, cy), pad, width=6)
 
     return surface
 
 
-def draw_main_board(screen: pygame.Surface, board: Board) -> None:
-    """Draws the main board composed of 9 inner boards."""
+def draw_labels(screen: pygame.Surface, big_cell: int) -> None:
+    """Draw row/col labels with matching top header and left sidebar."""
+    # top header band above the board
+    header_rect = pygame.Rect(BOARD_LEFT, 0, BOARD_SIZE, HEADER_H)
+    pygame.draw.rect(screen, BAR_BG, header_rect)
+    # bottom edge of header
+    pygame.draw.line(
+        screen,
+        BORDER,
+        (BOARD_LEFT, HEADER_H - 1),
+        (BOARD_LEFT + BOARD_SIZE, HEADER_H - 1),
+        1,
+    )
 
-    inner_size = SCREEN_SIZE // 3
-    line_color = pygame.Color("black")
-    x_color = pygame.Color("red")
-    o_color = pygame.Color("blue")
+    # left sidebar band next to the board (same style as header)
+    sidebar_rect = pygame.Rect(BOARD_LEFT - SIDEBAR_W, BOARD_TOP, SIDEBAR_W, BOARD_SIZE)
+    pygame.draw.rect(screen, BAR_BG, sidebar_rect)
+    # right edge of sidebar
+    pygame.draw.line(
+        screen,
+        BORDER,
+        (BOARD_LEFT - 1, BOARD_TOP),
+        (BOARD_LEFT - 1, BOARD_TOP + BOARD_SIZE),
+        1,
+    )
 
-    # Draw each inner board
-    for row in range(3):
-        for col in range(3):
-            x = col * inner_size
-            y = row * inner_size
-            inner_surface = render_inner_board(board[row][col], inner_size)
-            screen.blit(inner_surface, (x, y))
+    # column numbers centered in header band
+    for c in range(3):
+        text = FONT.render(str(c + 1), True, LBL_COLOR)
+        x = BOARD_LEFT + c * big_cell + big_cell // 2 - text.get_width() // 2
+        y = HEADER_H // 2 - text.get_height() // 2
+        screen.blit(text, (x, y))
 
-    # Draw a X or O over any inner boards that's already been won
-    for row in range(3):
-        for col in range(3):
-            inner = board[row][col]
-            val = inner.value
+    # row letters centered in sidebar band
+    for r in range(3):
+        text = FONT.render(chr(65 + r), True, LBL_COLOR)
+        x = BOARD_LEFT - SIDEBAR_W // 2 - text.get_width() // 2
+        y = BOARD_TOP + r * big_cell + big_cell // 2 - text.get_height() // 2
+        screen.blit(text, (x, y))
+
+
+def draw_main_board(
+    screen: pygame.Surface, board: Board, restriction: Tuple[int, int] | None
+) -> int:
+    """Draws the main board with restriction tint, crisp dividers, overlays and labels."""
+    inner_size = BOARD_SIZE // 3
+    board_rect = pygame.Rect(BOARD_LEFT, BOARD_TOP, BOARD_SIZE, BOARD_SIZE)
+
+    # background + border
+    pygame.draw.rect(screen, BOARD_BG, board_rect)
+    pygame.draw.rect(screen, BORDER, board_rect, width=1)
+
+    # draw inner boards
+    for r in range(3):
+        for c in range(3):
+            x = BOARD_LEFT + c * inner_size
+            y = BOARD_TOP + r * inner_size
+
+            # highlight restriction
+            if restriction == (r, c):
+                tint = pygame.Surface((inner_size, inner_size), pygame.SRCALPHA)
+                tint.fill((255, 230, 120, 70))
+                screen.blit(tint, (x, y))
+
+            surface = render_inner_board(board[r][c], inner_size)
+            screen.blit(surface, (x, y))
+
+    # draw big dividers
+    for i in range(1, 3):
+        yy = BOARD_TOP + i * inner_size
+        xx = BOARD_LEFT + i * inner_size
+        pygame.draw.rect(
+            screen,
+            LINE_COLOR,
+            pygame.Rect(BOARD_LEFT, yy - DIV_W // 2, BOARD_SIZE, DIV_W),
+        )
+        pygame.draw.rect(
+            screen,
+            LINE_COLOR,
+            pygame.Rect(xx - DIV_W // 2, BOARD_TOP, DIV_W, BOARD_SIZE),
+        )
+
+    # overlays for won inner boards
+    pad_big = inner_size // 2 - 18
+    for r in range(3):
+        for c in range(3):
+            val = board[r][c].value
             if val == Piece.EMPTY:
                 continue
-
-            # compute center of this big cell
-            x0 = col * inner_size
-            y0 = row * inner_size
-            cx = x0 + inner_size // 2
-            cy = y0 + inner_size // 2
-            pad = inner_size // 2 - MARGIN * 2
-
+            cx = BOARD_LEFT + c * inner_size + inner_size // 2
+            cy = BOARD_TOP + r * inner_size + inner_size // 2
             if val == Piece.X:
                 pygame.draw.line(
                     screen,
-                    x_color,
-                    (cx - pad, cy - pad),
-                    (cx + pad, cy + pad),
+                    X_COLOR,
+                    (cx - pad_big, cy - pad_big),
+                    (cx + pad_big, cy + pad_big),
                     width=12,
                 )
                 pygame.draw.line(
                     screen,
-                    x_color,
-                    (cx - pad, cy + pad),
-                    (cx + pad, cy - pad),
+                    X_COLOR,
+                    (cx - pad_big, cy + pad_big),
+                    (cx + pad_big, cy - pad_big),
                     width=12,
                 )
-            else:  # Piece.O
-                pygame.draw.circle(
-                    screen,
-                    o_color,
-                    (cx, cy),
-                    pad,
-                    width=12,
-                )
+            else:
+                pygame.draw.circle(screen, O_COLOR, (cx, cy), pad_big, width=12)
 
-    #  Draw main-grid lines
-    for i in range(1, 3):
-        # horizontal
-        pygame.draw.line(
-            screen,
-            line_color,
-            (MARGIN, i * inner_size),
-            (SCREEN_SIZE - MARGIN, i * inner_size),
-            width=6,
-        )
-        # vertical
-        pygame.draw.line(
-            screen,
-            line_color,
-            (i * inner_size, MARGIN),
-            (i * inner_size, SCREEN_SIZE - MARGIN),
-            width=6,
-        )
+    # labels last so they sit above everything
+    draw_labels(screen, inner_size)
+    return inner_size
 
 
-def make_move(board: Board, move: Move, restriction: Tuple | None) -> bool:
-    piece = move.piece
-    out_m, in_m = move.outer, move.inner
+def draw_status_bar(
+    screen: pygame.Surface,
+    p1: HumanPlayer,
+    p2: HumanPlayer,
+    current: HumanPlayer,
+    restriction: Tuple[int, int] | None,
+    last_invalid_until: float,
+) -> None:
+    """Draws the bottom status bar."""
+    y0 = SCREEN_SIZE - STATUS_BAR_H
+    pygame.draw.rect(screen, BAR_BG, pygame.Rect(0, y0, SCREEN_SIZE, STATUS_BAR_H))
 
-    # Check for restricted move
-    if restriction is not None and out_m != restriction:
+    # player names
+    p1_col = X_COLOR if p1.piece == Piece.X else O_COLOR
+    p2_col = X_COLOR if p2.piece == Piece.X else O_COLOR
+    p1_label = FONT_BOLD.render(p1.get_name(), True, p1_col)
+    p2_label = FONT_BOLD.render(p2.get_name(), True, p2_col)
+
+    # current turn
+    turn_col = X_COLOR if current.piece == Piece.X else O_COLOR
+    turn_label = FONT_BOLD.render(
+        f"Turn: {'X' if current.piece == Piece.X else 'O'}", True, turn_col
+    )
+
+    # restriction
+    rest_text = "Any" if restriction is None else idx_to_label(restriction)
+    rest_label = FONT_BOLD.render(f"Restriction: {rest_text}", True, LBL_COLOR)
+
+    pad = 14
+    screen.blit(p1_label, (pad, y0 + 12))
+    screen.blit(p2_label, (pad, y0 + 12 + p1_label.get_height() + 4))
+    screen.blit(turn_label, (SCREEN_SIZE // 3, y0 + 16))
+    screen.blit(rest_label, (SCREEN_SIZE // 3, y0 + 16 + turn_label.get_height() + 6))
+
+    # warning for invalid move
+    if time.time() < last_invalid_until:
+        warn = FONT_BOLD.render("Invalid move!", True, WARN_COLOR)
+        screen.blit(warn, (SCREEN_SIZE - warn.get_width() - pad, y0 + 16))
+
+
+def make_move(board: Board, move, restriction: Tuple[int, int] | None) -> bool:
+    """Applies a move if valid."""
+    out_rc, in_rc = move.outer, move.inner
+
+    if restriction is not None and out_rc != restriction:
         return False
 
-    l, c = out_m
-    inner_b = board[l][c]
-
-    if inner_b.get_game_state() != BoardState.NOT_FINISHED:
-        print(inner_b.get_game_state())
+    inner = board[out_rc[0]][out_rc[1]]
+    if inner.get_game_state() != BoardState.NOT_FINISHED:
         return False
 
-    l, c = in_m
-    status = inner_b.place_piece(l, c, piece)
-    return status
+    return inner.place_piece(in_rc[0], in_rc[1], move.piece)
 
 
 def game_loop() -> None:
-    """Main game loop that handles events and renders the game state."""
-
+    """Main game loop."""
     board = get_board()
 
     p1 = HumanPlayer(Piece.X)
     p2 = HumanPlayer(Piece.O)
-    player = p1
-    restriction = None  # Outer board restriction
+    current = p1
+    restriction: Tuple[int, int] | None = None
+    last_invalid_until = 0.0
 
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
 
-        screen.fill("white")
-        draw_main_board(screen, board)
+        screen.fill(BG)
+        draw_main_board(screen, board, restriction)
 
-        move = player.get_move(board)
-
+        move = current.get_move(board)
         if move:
-            # repeat loop if an invalid move is given
             if not make_move(board, move, restriction):
-                continue
+                last_invalid_until = time.time() + 1.5
+            else:
+                # update restriction
+                target = board[move.inner[0]][move.inner[1]]
+                restriction = (
+                    move.inner
+                    if target.get_game_state() == BoardState.NOT_FINISHED
+                    else None
+                )
+                current = p1 if current is p2 else p2
 
-            # Update restriction  based on state
-            state = board[move.inner[0]][move.inner[1]].get_game_state()
-            restriction = move.inner if state == BoardState.NOT_FINISHED else None
-            print(restriction)
-
-            player = p1 if player == p2 else p2  # change player
-            time.sleep(0.2)  # Give time for player to unclick mouse
+        draw_status_bar(screen, p1, p2, current, restriction, last_invalid_until)
 
         pygame.display.flip()
         clock.tick(60)
 
 
 def main() -> None:
-    set_screen_size(SCREEN_SIZE)
+    set_layout(
+        screen_w=SCREEN_SIZE,
+        screen_h=SCREEN_SIZE,
+        board_size=BOARD_SIZE,
+        board_left=BOARD_LEFT,
+        board_top=BOARD_TOP,
+    )
     game_loop()
     pygame.quit()
 

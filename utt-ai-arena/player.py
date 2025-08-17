@@ -2,40 +2,67 @@ from abc import ABC, abstractmethod
 from board import Board, Piece, Move
 from pygame import mouse
 
-screen_size = 0
+# Layout (set from main)
+_screen_w = 0
+_screen_h = 0
+_board_size = 0
+_board_left = 0
+_board_top = 0
 
 
-def set_screen_size(sz: int) -> None:
-    global screen_size
-    screen_size = sz
+def set_layout(
+    screen_w: int, screen_h: int, board_size: int, board_left: int, board_top: int
+) -> None:
+    global _screen_w, _screen_h, _board_size, _board_left, _board_top
+    _screen_w, _screen_h = screen_w, screen_h
+    _board_size, _board_left, _board_top = board_size, board_left, board_top
 
 
 class Player(ABC):
-    """Abstract player class."""
-
     def __init__(self, piece: Piece) -> None:
         self.piece = piece
 
     @abstractmethod
-    def get_move(self, board: Board) -> Move | None:
-        pass
+    def get_move(self, board: Board) -> Move | None: ...
+
+    @abstractmethod
+    def get_name(self) -> str: ...
 
 
 class HumanPlayer(Player):
+    def __init__(self, piece: Piece) -> None:
+        super().__init__(piece)
+        self._prev_down = False
+
     def get_move(self, board: Board) -> Move | None:
         down = mouse.get_pressed()[0]
         if not down:
             self._prev_down = False
             return None
         if self._prev_down:
-            return None  # still held
+            return None
         self._prev_down = True
 
         x, y = mouse.get_pos()
-        big_square_sz = screen_size / 3
-        small_square_sz = screen_size / 9
-        out_l = int(y // big_square_sz)
-        out_c = int(x // big_square_sz)
-        in_l = int(y // small_square_sz) % 3
-        in_c = int(x // small_square_sz) % 3
+        # Must be inside the board square
+        if not (
+            _board_left <= x < _board_left + _board_size
+            and _board_top <= y < _board_top + _board_size
+        ):
+            return None
+
+        lx = x - _board_left
+        ly = y - _board_top
+
+        big = _board_size / 3
+        small = _board_size / 9
+
+        out_l = int(ly // big)
+        out_c = int(lx // big)
+        in_l = int(ly // small) % 3
+        in_c = int(lx // small) % 3
+
         return Move(self.piece, (out_l, out_c), (in_l, in_c))
+
+    def get_name(self) -> str:
+        return f"{'X' if self.piece == Piece.X else 'O'} – Human"
