@@ -5,7 +5,7 @@ from typing import Tuple
 import pygame
 
 from board import Board, BoardState, Piece, get_board
-from player import HumanPlayer, MinmaxPlayer, set_layout, Player
+from player import HumanPlayer, MinmaxPlayer, Player, set_layout
 
 # --- constants ---
 SCREEN_SIZE = 1280
@@ -261,10 +261,11 @@ def game_loop() -> None:
     board = get_board()
 
     p1 = HumanPlayer(Piece.X)
-    p2 = MinmaxPlayer(Piece.O, depth_limit=5)
+    p2 = MinmaxPlayer(Piece.O, depth_limit=4)
 
     current = p1
     last_invalid_until = 0.0
+
     draw_main_board(screen, board, board.restriction)
 
     while True:
@@ -274,10 +275,11 @@ def game_loop() -> None:
 
         screen.fill(BG)
 
-        # Handle input/ai
+        # handle input/ai
         move = current.get_move(board)
         if move:
-            if not board.make_move(move):
+            token = board.make_move(move)
+            if token is None:
                 last_invalid_until = time.time() + 1.5
             else:
                 current = p1 if current is p2 else p2

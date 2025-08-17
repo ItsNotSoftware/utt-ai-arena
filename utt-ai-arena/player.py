@@ -1,7 +1,7 @@
 from __future__ import annotations
+from joblib import Parallel, delayed
 from abc import ABC, abstractmethod
 from typing import Tuple
-from pygame import mouse
 import math
 
 from board import (
@@ -54,6 +54,8 @@ class HumanPlayer(Player):
         self.name = "HumanPlayer"
 
     def get_move(self, board: Board) -> Move | None:
+        from pygame import mouse
+
         # single click
         down = mouse.get_pressed()[0]
         if not down:
@@ -88,7 +90,7 @@ class HumanPlayer(Player):
 
 
 class MinmaxPlayer(Player):
-    """Pure minimax."""
+    """Pure minimax (no pruning, no heuristic) using apply/undo."""
 
     def __init__(self, piece: Piece, depth_limit: int = 0) -> None:
         super().__init__(piece, depth_limit=depth_limit)
@@ -122,11 +124,12 @@ class MinmaxPlayer(Player):
         best = -math.inf if maximizing else math.inf
 
         for m in moves:
-            b = board.clone()
-            ok = b.make_move(m)
-            if not ok:
+            token = board.make_move(m)
+            if token is None:
                 continue  # should not happen with legal_moves
-            score = self._minmax(swap_piece(piece), b, depth + 1, depth_limit)
+            score = self._minmax(swap_piece(piece), board, depth + 1, depth_limit)
+            board.undo_move(token)
+
             if maximizing:
                 if score > best:
                     best = score
@@ -142,20 +145,35 @@ class MinmaxPlayer(Player):
             return None
 
         maximizing = self.piece == Piece.X
-        best_score = -math.inf if maximizing else math.inf
-        best_move: Move | None = None
 
-        for m in moves:
-            b = board.clone()
-            ok = b.make_move(m)
-            if not ok:
-                continue
-            score = self._minmax(swap_piece(self.piece), b, 1, self.depth_limit)
-            if maximizing:
-                if best_move is None or score > best_score:
-                    best_score, best_move = score, m
-            else:
-                if best_move is None or score < best_score:
-                    best_score, best_move = score, m
+        # Worker: evaluate one candidate move
+        def _eval(m: Move) -> tuple[float, Move]:
+            token = board.make_move(m)
+            if token is None:
+                return (-math.inf if maximizing else math.inf), m
+            score = self._minmax(swap_piece(self.piece), board, 1, self.depth_limit)
+            board.undo_move(token)
+            return score, m
+
+        # Parallel execution over all moves
+        results = Parallel(n_jobs=-1, backend="loky", prefer="processes")(
+            delayed(_eval)(m) for m in moves
+        )
+
+        for r in results:
+            score = r
+            if score == -math.inf:
+                print("O win")
+            elif score == math.inf:
+                print("X win")
+            elif score == 0:
+                print("draw")
+            print("--------------")
+
+        # Choose best depending on maximizing/minimizing
+        if maximizing:
+            best_score, best_move = max(results, key=lambda x: x[0])
+        else:
+            best_score, best_move = min(results, key=lambda x: x[0])
 
         return best_move

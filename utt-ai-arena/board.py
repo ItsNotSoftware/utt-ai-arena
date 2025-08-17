@@ -1,7 +1,7 @@
 from __future__ import annotations
 from enum import IntEnum
 from dataclasses import dataclass
-from typing import Callable, Union, Any, Tuple, List
+from typing import Callable, Union, Any, Tuple, List, Set
 
 
 class Piece(IntEnum):
@@ -10,11 +10,22 @@ class Piece(IntEnum):
     X = 1
 
 
-@dataclass
+@dataclass(slots=True)
 class Move:
     piece: Piece
     outer: Tuple[int, int]  # outer board position select
     inner: Tuple[int, int]  # inner board position select
+
+
+@dataclass(slots=True)
+class UndoToken:
+    """Minimal info to undo a move (for apply/undo in minimax)."""
+
+    outer: Tuple[int, int]
+    inner: Tuple[int, int]
+    prev_inner_state: "BoardState"
+    prev_main_state: "BoardState"
+    prev_restriction: Tuple[int, int] | None
 
 
 class BoardState(IntEnum):
@@ -35,13 +46,58 @@ class Board:
             [piece_factory() for _ in range(3)] for _ in range(3)
         ]
         self.board_state: BoardState = BoardState.NOT_FINISHED
+
+        # Detect type: this instance is an inner board if cells are Piece
+        self.is_inner: bool = isinstance(self.board[0][0], Piece)
+
+        # For main board:
         self.restriction: Tuple[int, int] | None = None  # next required outer (or None)
+        self.playable_outers_list: List[Tuple[int, int]] = []
+        self.playable_outers_set: Set[Tuple[int, int]] = set()
+
+        # For inner boards: track empty cells to speed legal move gen
+        self.empty_cells: Set[Tuple[int, int]] = set()
+
+        if self.is_inner:
+            self.empty_cells = {(r, c) for r in range(3) for c in range(3)}  # all empty
+        else:
+            # main board starts with all 9 outers playable
+            self._refresh_playable_outers()
 
     def __getitem__(self, idx: int) -> Any:
         return self.board[idx]
 
     def __setitem__(self, idx: int, value) -> None:
         self.board[idx] = value
+
+    def _refresh_playable_outers(self) -> None:
+        """Recomputes playable outer boards (NOT_FINISHED)."""
+        self.playable_outers_list = []
+        self.playable_outers_set.clear()
+        for r in range(3):
+            for c in range(3):
+                cell = self.board[r][c]
+                if (
+                    isinstance(cell, Board)
+                    and cell.board_state == BoardState.NOT_FINISHED
+                ):
+                    self.playable_outers_list.append((r, c))
+                    self.playable_outers_set.add((r, c))
+
+    def _remove_outer_if_finished(self, rc: Tuple[int, int]) -> None:
+        """Removes outer from playable sets if it just finished."""
+        if rc in self.playable_outers_set:
+            self.playable_outers_set.remove(rc)
+            # rebuild list once (cheap for 9 items)
+            self.playable_outers_list = [
+                x for x in self.playable_outers_list if x != rc
+            ]
+
+    def _add_outer_if_playable(self, rc: Tuple[int, int]) -> None:
+        """Adds outer to playable sets if it is NOT_FINISHED."""
+        if rc not in self.playable_outers_set:
+            self.playable_outers_set.add(rc)
+            self.playable_outers_list.append(rc)
 
     def _update_restriction(self, move: Move | None) -> None:
         """Updates the next restriction after a move."""
@@ -57,7 +113,9 @@ class Board:
 
     @property
     def value(self) -> Piece:
-        """(⚆ᗝ⚆) Supper cool hack to treat inner boards like pieces: X if X won, O if O won, EMPTY otherwise."""
+        """(⚆ᗝ⚆)
+        Treat inner boards like pieces: X if X won, O if O won, EMPTY otherwise.
+        """
         match self.board_state:
             case BoardState.X_WON:
                 return Piece.X
@@ -73,30 +131,83 @@ class Board:
             and self.board_state == BoardState.NOT_FINISHED
         ):
             self.board[l][c] = p
+            if self.is_inner:
+                # keep empty-cells in sync
+                self.empty_cells.discard((l, c))
             self.board_state = self.get_game_state()
             return True
         return False
 
-    def make_move(self, move: Move) -> bool:
-        """Applies a move. Enforces restriction and inner state. Updates next restriction."""
+    def make_move(self, move: Move) -> UndoToken | None:
+        """Applies a move. Enforces restriction and inner state. Updates next restriction. Returns UndoToken."""
         out_rc, in_rc = move.outer, move.inner
 
         # restriction (None means free choice)
-        if self.restriction is not None and out_rc != self.restriction:
-            return False
+        if (
+            not self.is_inner
+            and self.restriction is not None
+            and out_rc != self.restriction
+        ):
+            return None
 
-        # inner must be playable
+        # inner must be playable + cell must be empty
         inner = self.board[out_rc[0]][out_rc[1]]
-        if inner.get_game_state() != BoardState.NOT_FINISHED:
-            return False
+        if not isinstance(inner, Board):
+            return None
+        if inner.board_state != BoardState.NOT_FINISHED:
+            return None
+        if inner[in_rc[0]][in_rc[1]] != Piece.EMPTY:
+            return None
 
-        # place
+        token = UndoToken(
+            outer=out_rc,
+            inner=in_rc,
+            prev_inner_state=inner.board_state,
+            prev_main_state=self.board_state,
+            prev_restriction=self.restriction,
+        )
+
         ok = inner.place_piece(in_rc[0], in_rc[1], move.piece)
-        if ok:
-            self._update_restriction(move)
-            # refresh main board state (inner .value may have changed)
-            self.board_state = self.get_game_state()
-        return ok
+        if not ok:
+            return None
+
+        # If inner flipped to finished, remove from playable outers
+        if not self.is_inner:
+            if (
+                inner.board_state != BoardState.NOT_FINISHED
+                and token.prev_inner_state == BoardState.NOT_FINISHED
+            ):
+                self._remove_outer_if_finished(out_rc)
+
+        # Update next restriction and main state
+        self._update_restriction(move)
+        self.board_state = self.get_game_state()
+        return token
+
+    def undo_move(self, token: UndoToken) -> None:
+        """Undo a move previously done with make_move()."""
+        out_rc, in_rc = token.outer, token.inner
+        inner = self.board[out_rc[0]][out_rc[1]]
+        if not isinstance(inner, Board):
+            return
+
+        # restore piece to EMPTY
+        inner[in_rc[0]][in_rc[1]] = Piece.EMPTY
+        if inner.is_inner:
+            inner.empty_cells.add(in_rc)
+
+        # restore states + restriction
+        inner.board_state = token.prev_inner_state
+        self.board_state = token.prev_main_state
+        self.restriction = token.prev_restriction
+
+        # If inner became NOT_FINISHED again, re-add to playable outers
+        if not self.is_inner:
+            if (
+                inner.board_state == BoardState.NOT_FINISHED
+                and out_rc not in self.playable_outers_set
+            ):
+                self._add_outer_if_playable(out_rc)
 
     def get_game_state(self) -> BoardState:
         """Computes the state of this board (win/draw/playing)."""
@@ -130,16 +241,24 @@ class Board:
         return BoardState.NOT_FINISHED if any_empty else BoardState.DRAW
 
     def clone(self) -> Board:
-        """Deep copy (keeps inner boards and restriction)."""
+        """Deep copy (keeps inner boards, restriction, and playable outers/empties)."""
         new_board = Board(piece_factory=lambda: Piece.EMPTY)
         new_board.board_state = self.board_state
+        new_board.is_inner = self.is_inner
         new_board.restriction = self.restriction
+
         for i in range(3):
             for j in range(3):
                 cell = self.board[i][j]
-                new_board.board[i][j] = (
-                    cell.clone() if isinstance(cell, Board) else cell
-                )
+                if isinstance(cell, Board):
+                    new_board.board[i][j] = cell.clone()
+                else:
+                    new_board.board[i][j] = cell
+
+        if self.is_inner:
+            new_board.empty_cells = set(self.empty_cells)
+        else:
+            new_board._refresh_playable_outers()
         return new_board
 
 
@@ -153,35 +272,37 @@ def legal_moves(
 ) -> list[Move]:
     """All valid moves given a restriction (defaults to board.restriction)."""
     moves: list[Move] = []
+
+    # choose outers
     use_restr = board.restriction if restriction is None else restriction
-
-    if use_restr is None:
-        outers = [
-            (R, C)
-            for R in range(3)
-            for C in range(3)
-            if board[R][C].get_game_state() == BoardState.NOT_FINISHED
-        ]
+    if use_restr is not None and use_restr in board.playable_outers_set:
+        outers = [use_restr]
     else:
-        if (
-            board[use_restr[0]][use_restr[1]].get_game_state()
-            == BoardState.NOT_FINISHED
-        ):
-            outers = [use_restr]
-        else:
-            outers = [
-                (R, C)
-                for R in range(3)
-                for C in range(3)
-                if board[R][C].get_game_state() == BoardState.NOT_FINISHED
-            ]
+        outers = board.playable_outers_list
 
+    append = moves.append
     for R, C in outers:
         inner = board[R][C]
-        for r in range(3):
-            for c in range(3):
-                if inner[r][c] == Piece.EMPTY:
-                    moves.append(Move(piece, (R, C), (r, c)))
+        if not isinstance(inner, Board) or inner.board_state != BoardState.NOT_FINISHED:
+            continue
+        # fast: iterate only empty cells
+        for r, c in (
+            inner.empty_cells
+            if inner.is_inner
+            else {
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (1, 0),
+                (1, 1),
+                (1, 2),
+                (2, 0),
+                (2, 1),
+                (2, 2),
+            }
+        ):
+            if inner[r][c] == Piece.EMPTY:
+                append(Move(piece, (R, C), (r, c)))
     return moves
 
 
