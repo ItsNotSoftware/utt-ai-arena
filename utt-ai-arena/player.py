@@ -1,5 +1,4 @@
 from __future__ import annotations
-from joblib import Parallel, delayed
 from abc import ABC, abstractmethod
 from typing import Tuple
 import math
@@ -112,7 +111,7 @@ class MinmaxPlayer(Player):
             return -math.inf
 
         # Depth limit
-        if depth == depth_limit:
+        if depth >= depth_limit:
             return 0.0
 
         # Children
@@ -145,35 +144,24 @@ class MinmaxPlayer(Player):
             return None
 
         maximizing = self.piece == Piece.X
+        best_score = -math.inf if maximizing else math.inf
+        best_move: Move | None = None
 
-        # Worker: evaluate one candidate move
-        def _eval(m: Move) -> tuple[float, Move]:
+        # Evaluate candidate moves sequentially
+        for m in moves:
             token = board.make_move(m)
             if token is None:
-                return (-math.inf if maximizing else math.inf), m
+                # Should not happen with legal_moves;
+                continue
             score = self._minmax(swap_piece(self.piece), board, 1, self.depth_limit)
             board.undo_move(token)
-            return score, m
 
-        # Parallel execution over all moves
-        results = Parallel(n_jobs=-1, backend="loky", prefer="processes")(
-            delayed(_eval)(m) for m in moves
-        )
+            if maximizing:
+                if score > best_score:
+                    best_score, best_move = score, m
+            else:
+                if score < best_score:
+                    best_score, best_move = score, m
 
-        for r in results:
-            score = r
-            if score == -math.inf:
-                print("O win")
-            elif score == math.inf:
-                print("X win")
-            elif score == 0:
-                print("draw")
-            print("--------------")
-
-        # Choose best depending on maximizing/minimizing
-        if maximizing:
-            best_score, best_move = max(results, key=lambda x: x[0])
-        else:
-            best_score, best_move = min(results, key=lambda x: x[0])
-
-        return best_move
+        # Fallback to the first legal move if all tokens were unexpectedly None.
+        return best_move if best_move is not None else moves[0]

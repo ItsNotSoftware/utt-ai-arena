@@ -46,6 +46,35 @@ FONT = pygame.font.SysFont(None, 32)
 FONT_BOLD = pygame.font.SysFont(None, 40)
 
 
+def draw_endgame_banner(screen: pygame.Surface, state: BoardState) -> None:
+    """Draws a message across the top header when the game is finished."""
+    # cover the header band
+    header_rect = pygame.Rect(BOARD_LEFT, 0, BOARD_SIZE, HEADER_H)
+    pygame.draw.rect(screen, BAR_BG, header_rect)
+    pygame.draw.line(
+        screen,
+        BORDER,
+        (BOARD_LEFT, HEADER_H - 1),
+        (BOARD_LEFT + BOARD_SIZE, HEADER_H - 1),
+        1,
+    )
+
+    if state == BoardState.X_WON:
+        msg = "X wins!"
+        col = X_COLOR
+    elif state == BoardState.O_WON:
+        msg = "O wins!"
+        col = O_COLOR
+    else:
+        msg = "Draw"
+        col = LBL_COLOR
+
+    text = FONT_BOLD.render(msg, True, col)
+    x = BOARD_LEFT + (BOARD_SIZE - text.get_width()) // 2
+    y = (HEADER_H - text.get_height()) // 2
+    screen.blit(text, (x, y))
+
+
 def idx_to_label(rc: Tuple[int, int]) -> str:
     """(row, col) -> A1..C3."""
     r, c = rc
@@ -256,12 +285,12 @@ def draw_status_bar(
         screen.blit(warn, (SCREEN_SIZE - warn.get_width() - pad, y0 + 16))
 
 
-def game_loop() -> None:
+def game_loop() -> bool:
     """Main game loop."""
     board = get_board()
 
     p1 = HumanPlayer(Piece.X)
-    p2 = MinmaxPlayer(Piece.O, depth_limit=4)
+    p2 = MinmaxPlayer(Piece.O, depth_limit=5)
 
     current = p1
     last_invalid_until = 0.0
@@ -271,7 +300,7 @@ def game_loop() -> None:
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return
+                return False
 
         screen.fill(BG)
 
@@ -287,6 +316,14 @@ def game_loop() -> None:
         draw_main_board(screen, board, board.restriction)
         draw_status_bar(screen, p1, p2, current, board.restriction, last_invalid_until)
 
+        # Game finished
+        if board.board_state != BoardState.NOT_FINISHED:
+            draw_endgame_banner(screen, board.board_state)
+            pygame.display.flip()  # <-- show the banner
+            pygame.event.pump()  # <-- keep window responsive
+            pygame.time.wait(4000)  # <-- pause for 4s without freezing OS events
+            return True
+
         pygame.display.flip()
         clock.tick(60)
 
@@ -299,7 +336,11 @@ def main() -> None:
         board_left=BOARD_LEFT,
         board_top=BOARD_TOP,
     )
-    game_loop()
+
+    play_again = True
+    while play_again:
+        play_again = game_loop()
+
     pygame.quit()
 
 
