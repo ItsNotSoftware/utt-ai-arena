@@ -46,33 +46,33 @@ FONT = pygame.font.SysFont(None, 32)
 FONT_BOLD = pygame.font.SysFont(None, 40)
 
 
-def draw_endgame_banner(screen: pygame.Surface, state: BoardState) -> None:
-    """Draws a message across the top header when the game is finished."""
-    # cover the header band
-    header_rect = pygame.Rect(BOARD_LEFT, 0, BOARD_SIZE, HEADER_H)
-    pygame.draw.rect(screen, BAR_BG, header_rect)
-    pygame.draw.line(
-        screen,
-        BORDER,
-        (BOARD_LEFT, HEADER_H - 1),
-        (BOARD_LEFT + BOARD_SIZE, HEADER_H - 1),
-        1,
-    )
+def draw_endgame_overlay(screen: pygame.Surface, state: BoardState) -> None:
+    """Big 'X wins! / O wins! / Draw' centered over the main board."""
+    big_font = pygame.font.SysFont(None, 110)
 
     if state == BoardState.X_WON:
-        msg = "X wins!"
-        col = X_COLOR
+        msg, col = "X wins!", X_COLOR
     elif state == BoardState.O_WON:
-        msg = "O wins!"
-        col = O_COLOR
+        msg, col = "O wins!", O_COLOR
     else:
-        msg = "Draw"
-        col = LBL_COLOR
+        msg, col = "Draw", LBL_COLOR
 
-    text = FONT_BOLD.render(msg, True, col)
-    x = BOARD_LEFT + (BOARD_SIZE - text.get_width()) // 2
-    y = (HEADER_H - text.get_height()) // 2
-    screen.blit(text, (x, y))
+    text = big_font.render(msg, True, col)
+    outline = big_font.render(msg, True, BORDER)
+
+    # center inside board
+    cx = BOARD_LEFT + BOARD_SIZE // 2
+    cy = BOARD_TOP + BOARD_SIZE // 2
+    tx = cx - text.get_width() // 2
+    ty = cy - text.get_height() // 2
+
+    # optional subtle translucent wash for readability
+    wash = pygame.Surface((BOARD_SIZE, BOARD_SIZE), pygame.SRCALPHA)
+    wash.fill((255, 255, 255, 90))
+    screen.blit(wash, (BOARD_LEFT, BOARD_TOP))
+
+    screen.blit(outline, (tx + 2, ty + 2))
+    screen.blit(text, (tx, ty))
 
 
 def idx_to_label(rc: Tuple[int, int]) -> str:
@@ -286,23 +286,25 @@ def draw_status_bar(
 
 
 def game_loop() -> bool:
-    """Main game loop."""
     board = get_board()
 
-    p1 = HumanPlayer(Piece.X)
+    p1 = MinmaxPlayer(Piece.X, depth_limit=5)
     p2 = MinmaxPlayer(Piece.O, depth_limit=5)
 
     current = p1
     last_invalid_until = 0.0
 
+    # --- draw and flip once before loop ---
+    screen.fill(BG)
     draw_main_board(screen, board, board.restriction)
+    draw_status_bar(screen, p1, p2, current, board.restriction, last_invalid_until)
+    pygame.display.flip()
 
+    # --- now enter loop ---
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
-
-        screen.fill(BG)
 
         # handle input/ai
         move = current.get_move(board)
@@ -313,15 +315,22 @@ def game_loop() -> bool:
             else:
                 current = p1 if current is p2 else p2
 
+        screen.fill(BG)
         draw_main_board(screen, board, board.restriction)
         draw_status_bar(screen, p1, p2, current, board.restriction, last_invalid_until)
 
-        # Game finished
         if board.board_state != BoardState.NOT_FINISHED:
-            draw_endgame_banner(screen, board.board_state)
-            pygame.display.flip()  # <-- show the banner
-            pygame.event.pump()  # <-- keep window responsive
-            pygame.time.wait(4000)  # <-- pause for 4s without freezing OS events
+            draw_endgame_overlay(screen, board.board_state)
+            pygame.display.flip()
+            waiting = True
+            while waiting:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        return False
+                    if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                        waiting = False
+                        break
+                clock.tick(60)
             return True
 
         pygame.display.flip()

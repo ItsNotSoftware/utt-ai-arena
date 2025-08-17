@@ -2,6 +2,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Tuple
 import math
+import random
 
 from board import (
     Board,
@@ -139,13 +140,18 @@ class MinmaxPlayer(Player):
         return best
 
     def get_move(self, board: Board) -> Move | None:
+        # get legal moves
         moves = legal_moves(board, self.piece, board.restriction)
+
+        # allow for random move selection when multiple have the same eval
+        random.shuffle(moves)
+
         if not moves:
             return None
 
         maximizing = self.piece == Piece.X
         best_score = -math.inf if maximizing else math.inf
-        best_move: Move | None = None
+        best_move = moves[0]
 
         # Evaluate candidate moves sequentially
         for m in moves:
@@ -163,5 +169,4 @@ class MinmaxPlayer(Player):
                 if score < best_score:
                     best_score, best_move = score, m
 
-        # Fallback to the first legal move if all tokens were unexpectedly None.
-        return best_move if best_move is not None else moves[0]
+        return best_move
