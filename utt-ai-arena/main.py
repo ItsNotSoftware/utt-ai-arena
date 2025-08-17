@@ -5,7 +5,7 @@ from typing import Tuple
 
 import pygame
 
-from board import Board, BoardState, Piece, get_board
+from board import *
 from player import HumanPlayer, set_layout
 
 # --- constants ---
@@ -297,12 +297,7 @@ def game_loop() -> None:
                 last_invalid_until = time.time() + 1.5
             else:
                 # update restriction
-                target = board[move.inner[0]][move.inner[1]]
-                restriction = (
-                    move.inner
-                    if target.get_game_state() == BoardState.NOT_FINISHED
-                    else None
-                )
+                restriction = get_restriction(board, move)
                 current = p1 if current is p2 else p2
 
         draw_status_bar(screen, p1, p2, current, restriction, last_invalid_until)

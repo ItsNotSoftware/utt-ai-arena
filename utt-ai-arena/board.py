@@ -1,3 +1,4 @@
+from __future__ import annotations
 from enum import IntEnum
 from typing import Callable, Union, Any
 from dataclasses import dataclass
@@ -101,7 +102,63 @@ class Board:
         any_empty = any(is_empty(self.board[r][c]) for r in range(3) for c in range(3))
         return BoardState.NOT_FINISHED if any_empty else BoardState.DRAW
 
+    def clone(self) -> Board:
+        """Returns a deep copy of this board, including its inner boards or pieces."""
+
+        new_board = Board(piece_factory=lambda: Piece.EMPTY)
+        new_board.board_state = self.board_state
+
+        for i in range(3):
+            for j in range(3):
+                cell = self.board[i][j]
+                if isinstance(cell, Board):
+                    new_board.board[i][j] = cell.clone()
+                else:
+                    new_board.board[i][j] = cell
+
+        return new_board
+
 
 def get_board() -> Board:
     """Returns a main board composed of 9 inner boards."""
     return Board(piece_factory=lambda: Board())
+
+
+def legal_moves(board, piece, restriction) -> list[Move]:
+    moves = []
+    if restriction is None:
+        outers = [
+            (R, C)
+            for R in range(3)
+            for C in range(3)
+            if board[R][C].get_game_state() == BoardState.NOT_FINISHED
+        ]
+    else:
+        outers = (
+            [restriction]
+            if board[restriction[0]][restriction[1]].get_game_state()
+            == BoardState.NOT_FINISHED
+            else [
+                (R, C)
+                for R in range(3)
+                for C in range(3)
+                if board[R][C].get_game_state() == BoardState.NOT_FINISHED
+            ]
+        )
+
+    for R, C in outers:
+        inner = board[R][C]
+        for r in range(3):
+            for c in range(3):
+                if inner[r][c] == Piece.EMPTY:
+                    moves.append(Move(piece, (R, C), (r, c)))
+    return moves
+
+
+def swap_piece(p: Piece) -> Piece:
+    return Piece.X if p == Piece.O else Piece.O
+
+
+def get_restriction(board: Board, move: Move) -> Tuple[int, int] | None:
+    target = board[move.inner[0]][move.inner[1]]
+    return move.inner if target.get_game_state() == BoardState.NOT_FINISHED else None

@@ -1,0 +1,20 @@
+Minimax
+
+Alpha–Beta Pruning
+
+Iterative Deepening Depth-First Search 
+
+Heuristic Minimax
+
+Monte Carlo Simulation (Flat Monte Carlo)
+
+Monte Carlo Tree Search (MCTS)
+
+Tabular Q-Learning
+Basic reinforcement learning via self-play. Works for small state spaces like Tic-Tac-Toe.
+
+Deep Q-Network (DQN)
+
+Policy Gradient (REINFORCE or PPO)
+
+RL + MCTS (AlphaZero-lite)
