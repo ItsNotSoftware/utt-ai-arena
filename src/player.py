@@ -53,7 +53,7 @@ class Player(ABC):
         avg = self._move_time_total / self._move_count
         print(
             f"{self.get_name()} move time: {duration:.3f}s "
-            f"(avg {avg:.3f}s move{'s' if self._move_count != 1 else ''})"
+            f"(avg {avg:.3f}s over {self._move_count} move{'s' if self._move_count != 1 else ''})"
         )
         return move
 
@@ -105,7 +105,7 @@ class HumanPlayer(Player):
         return Move(self.piece, (out_l, out_c), (in_l, in_c))
 
 
-class MinmaxPlayer(Player):
+class MinimaxPlayer(Player):
     """Pure minimax (no pruning, no heuristic) using apply/undo."""
 
     # Heuristic scores
@@ -136,6 +136,7 @@ class MinmaxPlayer(Player):
             self.name += " (" + ", ".join(features) + ")"
 
         self.use_heuristic_eval = use_heuristic_eval
+        self.use_pruning = use_pruning
 
     def _evaluate_board(self, board: Board) -> float:
         boards = [board[i][j] for i in range(3) for j in range(3)]
@@ -234,12 +235,14 @@ class MinmaxPlayer(Player):
 
         return score
 
-    def _minmax(
+    def _minimax(
         self,
         piece: Piece,
         board: Board,
         depth: int,
         depth_limit: int,
+        alpha: float | None,
+        beta: float | None,
     ) -> float:
         # Terminal?
         if board.board_state == BoardState.DRAW:
@@ -265,15 +268,25 @@ class MinmaxPlayer(Player):
             token = board.make_move(m)
             if token is None:
                 continue  # should not happen with legal_moves
-            score = self._minmax(swap_piece(piece), board, depth + 1, depth_limit)
+            score = self._minimax(
+                swap_piece(piece), board, depth + 1, depth_limit, alpha, beta
+            )
             board.undo_move(token)
 
             if maximizing:
                 if score > best:
                     best = score
+                    if self.use_pruning and alpha is not None and beta is not None:
+                        alpha = max(alpha, best)
+                        if alpha >= beta:
+                            break
             else:
                 if score < best:
                     best = score
+                    if self.use_pruning and alpha is not None and beta is not None:
+                        beta = min(beta, best)
+                        if beta <= alpha:
+                            break
 
         return best
 
@@ -292,19 +305,39 @@ class MinmaxPlayer(Player):
         best_move = moves[0]
 
         # Evaluate candidate moves sequentially
+        if self.use_pruning:
+            alpha = -math.inf
+            beta = math.inf
+        else:
+            alpha = None
+            beta = None
+
         for m in moves:
             token = board.make_move(m)
             if token is None:
                 # Should not happen with legal_moves;
                 continue
-            score = self._minmax(swap_piece(self.piece), board, 1, self.depth_limit)
+            score = self._minimax(
+                swap_piece(self.piece), board, 1, self.depth_limit, alpha, beta
+            )
             board.undo_move(token)
 
             if maximizing:
                 if score > best_score:
                     best_score, best_move = score, m
+                    if self.use_pruning and alpha is not None:
+                        alpha = max(alpha, best_score)
             else:
                 if score < best_score:
                     best_score, best_move = score, m
+                    if self.use_pruning and beta is not None:
+                        beta = min(beta, best_score)
+            if (
+                self.use_pruning
+                and alpha is not None
+                and beta is not None
+                and beta <= alpha
+            ):
+                break
 
         return best_move

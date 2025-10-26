@@ -5,7 +5,7 @@ from typing import Tuple
 import pygame
 
 from board import Board, BoardState, Piece, get_board
-from player import HumanPlayer, MinmaxPlayer, Player, set_layout
+from player import HumanPlayer, MinimaxPlayer, Player, set_layout
 
 # --- constants ---
 SCREEN_SIZE = 1280
@@ -288,8 +288,15 @@ def draw_status_bar(
 def game_loop() -> bool:
     board = get_board()
 
-    p1 = MinmaxPlayer(Piece.X, depth_limit=5, use_heuristic_eval=False)
-    p2 = MinmaxPlayer(Piece.O, depth_limit=5, use_heuristic_eval=True)
+    p1 = MinimaxPlayer(
+        Piece.X, depth_limit=7, use_heuristic_eval=True, use_pruning=True
+    )
+    p2 = MinimaxPlayer(
+        Piece.O,
+        depth_limit=5,
+        use_heuristic_eval=True,
+        use_pruning=False,
+    )
 
     current = p1
     last_invalid_until = 0.0
