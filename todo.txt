@@ -1,20 +1,23 @@
-Minimax
+[x] Minimax
 
-Alpha–Beta Pruning
+[] Heuristic Minmax 
 
-Iterative Deepening Depth-First Search 
+[] Alpha–Beta Pruning
 
-Heuristic Minimax
+[] Iterative Deepening Depth-First Search 
 
-Monte Carlo Simulation (Flat Monte Carlo)
+[] Heuristic Minimax
 
-Monte Carlo Tree Search (MCTS)
+[] Monte Carlo Simulation (Flat Monte Carlo)
 
-Tabular Q-Learning
-Basic reinforcement learning via self-play. Works for small state spaces like Tic-Tac-Toe.
+[] Monte Carlo Tree Search (MCTS)
 
-Deep Q-Network (DQN)
+[] Tabular Q-Learning
 
-Policy Gradient (REINFORCE or PPO)
+[] Basic reinforcement learning via self-play
 
-RL + MCTS (AlphaZero-lite)
+[] Deep Q-Network (DQN)
+
+[] Policy Gradient (REINFORCE or PPO)
+
+[] RL + MCTS 

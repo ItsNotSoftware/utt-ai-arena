@@ -288,8 +288,8 @@ def draw_status_bar(
 def game_loop() -> bool:
     board = get_board()
 
-    p1 = MinmaxPlayer(Piece.X, depth_limit=5)
-    p2 = MinmaxPlayer(Piece.O, depth_limit=5)
+    p1 = MinmaxPlayer(Piece.X, depth_limit=5, use_heuristic_eval=False)
+    p2 = MinmaxPlayer(Piece.O, depth_limit=5, use_heuristic_eval=True)
 
     current = p1
     last_invalid_until = 0.0

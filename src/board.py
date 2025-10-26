@@ -19,7 +19,7 @@ class Move:
 
 @dataclass(slots=True)
 class UndoToken:
-    """Minimal info to undo a move (for apply/undo in minimax)."""
+    """Minimal info to undo a move (for bot exploration)."""
 
     outer: Tuple[int, int]
     inner: Tuple[int, int]
@@ -88,7 +88,6 @@ class Board:
         """Removes outer from playable sets if it just finished."""
         if rc in self.playable_outers_set:
             self.playable_outers_set.remove(rc)
-            # rebuild list once (cheap for 9 items)
             self.playable_outers_list = [
                 x for x in self.playable_outers_list if x != rc
             ]
@@ -285,7 +284,6 @@ def legal_moves(
         inner = board[R][C]
         if not isinstance(inner, Board) or inner.board_state != BoardState.NOT_FINISHED:
             continue
-        # fast: iterate only empty cells
         for r, c in (
             inner.empty_cells
             if inner.is_inner
