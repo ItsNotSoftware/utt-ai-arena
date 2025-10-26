@@ -1,5 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from time import perf_counter
 from typing import Tuple
 import math
 import random
@@ -37,12 +38,27 @@ class Player(ABC):
         self.piece = piece
         self.depth_limit = depth_limit
         self.name = "Player"
+        self._move_count = 0
+        self._move_time_total = 0.0
 
     def get_name(self) -> str:
         return f"{'X' if self.piece == Piece.X else 'O'} – {self.name}"
 
+    def get_move(self, board: Board) -> Move | None:
+        start = perf_counter()
+        move = self._select_move(board)
+        duration = perf_counter() - start
+        self._move_count += 1
+        self._move_time_total += duration
+        avg = self._move_time_total / self._move_count
+        print(
+            f"{self.get_name()} move time: {duration:.3f}s "
+            f"(avg {avg:.3f}s move{'s' if self._move_count != 1 else ''})"
+        )
+        return move
+
     @abstractmethod
-    def get_move(self, board: Board) -> Move | None: ...
+    def _select_move(self, board: Board) -> Move | None: ...
 
 
 class HumanPlayer(Player):
@@ -53,7 +69,7 @@ class HumanPlayer(Player):
         self._prev_down = False
         self.name = "HumanPlayer"
 
-    def get_move(self, board: Board) -> Move | None:
+    def _select_move(self, board: Board) -> Move | None:
         from pygame import mouse
 
         # single click
@@ -103,10 +119,22 @@ class MinmaxPlayer(Player):
     }
 
     def __init__(
-        self, piece: Piece, depth_limit: int = 0, use_heuristic_eval=True
+        self,
+        piece: Piece,
+        depth_limit: int = 0,
+        use_heuristic_eval=True,
+        use_pruning=True,
     ) -> None:
         super().__init__(piece, depth_limit=depth_limit)
-        self.name = "Minmax"
+        self.name = "Minimax"
+        features = []
+        if use_heuristic_eval:
+            features.append("heuristic")
+        if use_pruning:
+            features.append("pruning")
+        if features:
+            self.name += " (" + ", ".join(features) + ")"
+
         self.use_heuristic_eval = use_heuristic_eval
 
     def _evaluate_board(self, board: Board) -> float:
@@ -249,7 +277,7 @@ class MinmaxPlayer(Player):
 
         return best
 
-    def get_move(self, board: Board) -> Move | None:
+    def _select_move(self, board: Board) -> Move | None:
         # get legal moves
         moves = legal_moves(board, self.piece, board.restriction)
 
