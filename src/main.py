@@ -19,15 +19,15 @@ BOARD_LEFT = (SCREEN_SIZE - BOARD_SIZE) // 2
 BOARD_TOP = HEADER_H  # push board down to make room for header
 
 # --- colors ---
-BG = pygame.Color(250, 251, 255)
-BOARD_BG = pygame.Color(255, 255, 255)
-BAR_BG = pygame.Color(243, 245, 250)
-BORDER = pygame.Color(30, 30, 30)
-LINE_COLOR = pygame.Color(50, 50, 55)
-X_COLOR = pygame.Color(210, 30, 30)
-O_COLOR = pygame.Color(25, 80, 220)
-LBL_COLOR = pygame.Color(90, 95, 110)
-WARN_COLOR = pygame.Color(200, 30, 30)
+BG = pygame.Color(246, 247, 252)
+BOARD_BG = pygame.Color(252, 253, 255)
+BAR_BG = pygame.Color(236, 239, 246)
+BORDER = pygame.Color(24, 24, 28)
+LINE_COLOR = pygame.Color(60, 63, 72)
+X_COLOR = pygame.Color(200, 40, 35)
+O_COLOR = pygame.Color(35, 90, 200)
+LBL_COLOR = pygame.Color(82, 88, 105)
+WARN_COLOR = pygame.Color(200, 45, 45)
 
 # --- grid thickness ---
 GRID_THIN = 2
@@ -49,8 +49,8 @@ screen = pygame.display.set_mode((SCREEN_SIZE, SCREEN_SIZE))
 clock = pygame.time.Clock()
 pygame.display.set_caption("Ultimate Tic-Tac-Toe")
 
-FONT = pygame.font.SysFont(None, 32)
-FONT_BOLD = pygame.font.SysFont(None, 40)
+FONT = pygame.font.SysFont("Georgia", 28)
+FONT_BOLD = pygame.font.SysFont("Georgia", 36, bold=True)
 
 
 def draw_endgame_overlay(screen: pygame.Surface, state: BoardState) -> None:
@@ -282,10 +282,13 @@ def draw_status_bar(
     rest_label = FONT_BOLD.render(f"Restriction: {rest_text}", True, LBL_COLOR)
 
     pad = 14
+    left_w = max(p1_label.get_width(), p2_label.get_width())
+    mid_x = pad + left_w + 36
+
     screen.blit(p1_label, (pad, y0 + 12))
     screen.blit(p2_label, (pad, y0 + 12 + p1_label.get_height() + 4))
-    screen.blit(turn_label, (SCREEN_SIZE // 3, y0 + 16))
-    screen.blit(rest_label, (SCREEN_SIZE // 3, y0 + 16 + turn_label.get_height() + 6))
+    screen.blit(turn_label, (mid_x, y0 + 16))
+    screen.blit(rest_label, (mid_x, y0 + 16 + turn_label.get_height() + 6))
 
     # warning
     if time.time() < last_invalid_until:
@@ -293,7 +296,8 @@ def draw_status_bar(
         screen.blit(warn, (SCREEN_SIZE - warn.get_width() - pad, y0 + 16))
 
     if thinking:
-        msg = FONT_BOLD.render("Thinking...", True, LBL_COLOR)
+        dots = "." * (int(time.time() * 3) % 4) + " " * (3 - (int(time.time() * 3) % 4))
+        msg = FONT_BOLD.render(f"Thinking{dots}", True, LBL_COLOR)
         screen.blit(msg, (SCREEN_SIZE - msg.get_width() - pad, y0 + 16))
 
 

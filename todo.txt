@@ -1,12 +1,8 @@
 [x] Minimax
 
-[] Heuristic Minmax 
+[x] Heuristic Minmax 
 
-[] Alpha–Beta Pruning
-
-[] Iterative Deepening Depth-First Search 
-
-[] Heuristic Minimax
+[x] Alpha–Beta Pruning
 
 [] Monte Carlo Simulation (Flat Monte Carlo)
 
