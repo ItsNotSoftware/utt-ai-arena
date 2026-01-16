@@ -10,6 +10,7 @@ from board import (
     BoardState,
     Move,
     Piece,
+    board_state_to_piece,
     legal_moves,
     swap_piece,
 )
@@ -173,7 +174,7 @@ class MinimaxPlayer(Player):
         # Outer board heuristic: based on inner board outcomes
         outer_values = [
             [
-                board[r][c].value if isinstance(board[r][c], Board) else Piece.EMPTY
+                board_state_to_piece(board[r][c].board_state)
                 for c in range(3)
             ]
             for r in range(3)
@@ -189,9 +190,7 @@ class MinimaxPlayer(Player):
         for r in range(3):
             for c in range(3):
                 inner_board = board[r][c]
-                if not isinstance(inner_board, Board):
-                    continue
-                value = inner_board.value
+                value = board_state_to_piece(inner_board.board_state)
                 if (r, c) in important_positions:
                     if value == Piece.X:
                         score += heur["center_corner"]
@@ -200,9 +199,6 @@ class MinimaxPlayer(Player):
 
         # Evaluate each inner board
         for inner in boards:
-            if not isinstance(inner, Board):
-                continue
-
             if inner.board_state == BoardState.X_WON:
                 score += heur["inner_win"]
             elif inner.board_state == BoardState.O_WON:

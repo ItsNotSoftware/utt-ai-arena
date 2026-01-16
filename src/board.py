@@ -35,6 +35,24 @@ class BoardState(IntEnum):
     X_WON = 3
 
 
+def board_state_to_piece(state: BoardState) -> Piece:
+    """Map a finished board state to a piece; unfinished/draw => EMPTY."""
+    if state == BoardState.X_WON:
+        return Piece.X
+    if state == BoardState.O_WON:
+        return Piece.O
+    return Piece.EMPTY
+
+
+def board_state_to_value(state: BoardState) -> int:
+    """Map a finished board state to +1/-1; unfinished/draw => 0."""
+    if state == BoardState.X_WON:
+        return 1
+    if state == BoardState.O_WON:
+        return -1
+    return 0
+
+
 class Board:
     """Class to represent any board, inner boards or the main board (composed of 9 inner boards)."""
 
@@ -100,28 +118,12 @@ class Board:
 
     def _update_restriction(self, move: Move | None) -> None:
         """Updates the next restriction after a move."""
-        if move is None:
+        if move is None or self.is_inner:
             return
         target = self.board[move.inner[0]][move.inner[1]]
-        if isinstance(target, Piece):
-            self.restriction = None
-            return
         self.restriction = (
-            move.inner if target.get_game_state() == BoardState.NOT_FINISHED else None
+            move.inner if target.board_state == BoardState.NOT_FINISHED else None
         )
-
-    @property
-    def value(self) -> Piece:
-        """(⚆ᗝ⚆)
-        Treat inner boards like pieces: X if X won, O if O won, EMPTY otherwise.
-        """
-        match self.board_state:
-            case BoardState.X_WON:
-                return Piece.X
-            case BoardState.O_WON:
-                return Piece.O
-            case _:
-                return Piece.EMPTY
 
     def place_piece(self, l: int, c: int, p: Piece) -> bool:
         """Places a piece on the board at the specified location."""
@@ -212,31 +214,66 @@ class Board:
         """Computes the state of this board (win/draw/playing)."""
         x_won = 3
         o_won = -3
+        b = self.board
+
+        if self.is_inner:
+            # lines + columns
+            for i in range(3):
+                line_sum = b[i][0].value + b[i][1].value + b[i][2].value
+                col_sum = b[0][i].value + b[1][i].value + b[2][i].value
+                if line_sum == x_won or col_sum == x_won:
+                    return BoardState.X_WON
+                if line_sum == o_won or col_sum == o_won:
+                    return BoardState.O_WON
+
+            # diagonals
+            diag1 = b[0][0].value + b[1][1].value + b[2][2].value
+            diag2 = b[2][0].value + b[1][1].value + b[0][2].value
+            if diag1 == x_won or diag2 == x_won:
+                return BoardState.X_WON
+            if diag1 == o_won or diag2 == o_won:
+                return BoardState.O_WON
+
+            return BoardState.NOT_FINISHED if self.empty_cells else BoardState.DRAW
 
         # lines + columns
         for i in range(3):
-            line_sum = sum(self.board[i][j].value for j in range(3))
-            col_sum = sum(self.board[j][i].value for j in range(3))
+            line_sum = (
+                board_state_to_value(b[i][0].board_state)
+                + board_state_to_value(b[i][1].board_state)
+                + board_state_to_value(b[i][2].board_state)
+            )
+            col_sum = (
+                board_state_to_value(b[0][i].board_state)
+                + board_state_to_value(b[1][i].board_state)
+                + board_state_to_value(b[2][i].board_state)
+            )
             if line_sum == x_won or col_sum == x_won:
                 return BoardState.X_WON
             if line_sum == o_won or col_sum == o_won:
                 return BoardState.O_WON
 
         # diagonals
-        diag1 = self.board[0][0].value + self.board[1][1].value + self.board[2][2].value
-        diag2 = self.board[2][0].value + self.board[1][1].value + self.board[0][2].value
+        diag1 = (
+            board_state_to_value(b[0][0].board_state)
+            + board_state_to_value(b[1][1].board_state)
+            + board_state_to_value(b[2][2].board_state)
+        )
+        diag2 = (
+            board_state_to_value(b[2][0].board_state)
+            + board_state_to_value(b[1][1].board_state)
+            + board_state_to_value(b[0][2].board_state)
+        )
         if diag1 == x_won or diag2 == x_won:
             return BoardState.X_WON
         if diag1 == o_won or diag2 == o_won:
             return BoardState.O_WON
 
-        # empty?
-        def is_empty(cell: Union[Piece, "Board"]) -> bool:
-            if isinstance(cell, Piece):
-                return cell == Piece.EMPTY
-            return cell.board_state == BoardState.NOT_FINISHED
-
-        any_empty = any(is_empty(self.board[r][c]) for r in range(3) for c in range(3))
+        any_empty = any(
+            b[r][c].board_state == BoardState.NOT_FINISHED
+            for r in range(3)
+            for c in range(3)
+        )
         return BoardState.NOT_FINISHED if any_empty else BoardState.DRAW
 
     def clone(self) -> Board:
@@ -282,25 +319,10 @@ def legal_moves(
     append = moves.append
     for R, C in outers:
         inner = board[R][C]
-        if not isinstance(inner, Board) or inner.board_state != BoardState.NOT_FINISHED:
+        if inner.board_state != BoardState.NOT_FINISHED:
             continue
-        for r, c in (
-            inner.empty_cells
-            if inner.is_inner
-            else {
-                (0, 0),
-                (0, 1),
-                (0, 2),
-                (1, 0),
-                (1, 1),
-                (1, 2),
-                (2, 0),
-                (2, 1),
-                (2, 2),
-            }
-        ):
-            if inner[r][c] == Piece.EMPTY:
-                append(Move(piece, (R, C), (r, c)))
+        for r, c in inner.empty_cells:
+            append(Move(piece, (R, C), (r, c)))
     return moves
 
 

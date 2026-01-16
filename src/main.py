@@ -1,10 +1,12 @@
 from __future__ import annotations
 import time
+import multiprocessing
+import queue
 from typing import Tuple
 
 import pygame
 
-from board import Board, BoardState, Piece, get_board
+from board import Board, BoardState, Piece, board_state_to_piece, get_board
 from player import HumanPlayer, MinimaxPlayer, Player, set_layout
 
 # --- constants ---
@@ -35,6 +37,11 @@ INNER_MARGIN = 16  # margin inside each inner board
 # --- fonts ---
 FONT = None
 FONT_BOLD = None
+
+
+def _compute_ai_move(player: Player, board_snapshot: Board, out_q: "queue.Queue") -> None:
+    """Worker process: compute AI move on a snapshot and return it via queue."""
+    out_q.put(player.get_move(board_snapshot))
 
 # --- setup ---
 pygame.init()
@@ -217,7 +224,7 @@ def draw_main_board(
     pad_big = inner_size // 2 - 18
     for r in range(3):
         for c in range(3):
-            val = board[r][c].value
+            val = board_state_to_piece(board[r][c].board_state)
             if val == Piece.EMPTY:
                 continue
             cx = BOARD_LEFT + c * inner_size + inner_size // 2
@@ -252,6 +259,7 @@ def draw_status_bar(
     current: Player,
     restriction: Tuple[int, int] | None,
     last_invalid_until: float,
+    thinking: bool = False,
 ) -> None:
     """Bottom status bar."""
     y0 = SCREEN_SIZE - STATUS_BAR_H
@@ -284,6 +292,10 @@ def draw_status_bar(
         warn = FONT_BOLD.render("Invalid move!", True, WARN_COLOR)
         screen.blit(warn, (SCREEN_SIZE - warn.get_width() - pad, y0 + 16))
 
+    if thinking:
+        msg = FONT_BOLD.render("Thinking...", True, LBL_COLOR)
+        screen.blit(msg, (SCREEN_SIZE - msg.get_width() - pad, y0 + 16))
+
 
 def game_loop() -> bool:
     board = get_board()
@@ -298,8 +310,16 @@ def game_loop() -> bool:
         use_pruning=False,
     )
 
-    current = p1
+    current = p1 if time.time() % 2 < 1 else p2
     last_invalid_until = 0.0
+    pending_move: Move | None = None
+    ai_process: multiprocessing.Process | None = None
+    mp_ctx = (
+        multiprocessing.get_context("fork")
+        if "fork" in multiprocessing.get_all_start_methods()
+        else multiprocessing.get_context()
+    )
+    ai_result: "queue.Queue[Move | None]" = mp_ctx.Queue()
 
     # --- draw and flip once before loop ---
     screen.fill(BG)
@@ -311,20 +331,53 @@ def game_loop() -> bool:
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                if ai_process is not None and ai_process.is_alive():
+                    ai_process.terminate()
+                    ai_process.join()
                 return False
 
         # handle input/ai
-        move = current.get_move(board)
+        if pending_move is None:
+            if isinstance(current, HumanPlayer):
+                pending_move = current.get_move(board)
+            else:
+                if ai_process is None:
+                    board_snapshot = board.clone()
+                    ai_process = mp_ctx.Process(
+                        target=_compute_ai_move,
+                        args=(current, board_snapshot, ai_result),
+                        daemon=True,
+                    )
+                    ai_process.start()
+                try:
+                    pending_move = ai_result.get_nowait()
+                    ai_process.join()
+                    ai_process = None
+                except queue.Empty:
+                    if ai_process is not None and not ai_process.is_alive():
+                        ai_process.join()
+                        ai_process = None
+                    pass
+        move = pending_move
         if move:
             token = board.make_move(move)
             if token is None:
                 last_invalid_until = time.time() + 1.5
             else:
                 current = p1 if current is p2 else p2
+            pending_move = None
 
         screen.fill(BG)
         draw_main_board(screen, board, board.restriction)
-        draw_status_bar(screen, p1, p2, current, board.restriction, last_invalid_until)
+        draw_status_bar(
+            screen,
+            p1,
+            p2,
+            current,
+            board.restriction,
+            last_invalid_until,
+            thinking=not isinstance(current, HumanPlayer) and pending_move is None,
+        )
 
         if board.board_state != BoardState.NOT_FINISHED:
             draw_endgame_overlay(screen, board.board_state)
