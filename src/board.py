@@ -297,33 +297,100 @@ class Board:
             new_board._refresh_playable_outers()
         return new_board
 
+    def legal_moves(
+        self, piece: Piece, restriction: Tuple[int, int] | None = None
+    ) -> list[Move]:
+        """All valid moves given a restriction (defaults to self.restriction)."""
+        moves: list[Move] = []
+
+        # choose outers
+        use_restr = self.restriction if restriction is None else restriction
+        if use_restr is not None and use_restr in self.playable_outers_set:
+            outers = [use_restr]
+        else:
+            outers = self.playable_outers_list
+
+        append = moves.append
+        for R, C in outers:
+            inner = self.board[R][C]
+            if inner.board_state != BoardState.NOT_FINISHED:
+                continue
+            for r, c in inner.empty_cells:
+                append(Move(piece, (R, C), (r, c)))
+        return moves
+
+    def board_key(self, turn: Piece | None = None) -> tuple:
+        """Immutable key for hashing/caching. Optionally include turn."""
+        if self.is_inner:
+            # 9 cells as piece values
+            cells = tuple(self.board[r][c].value for r in range(3) for c in range(3))
+            base = ("inner",) + cells
+        else:
+            # main board: restriction + all inner boards
+            restriction = self.restriction if self.restriction is not None else (-1, -1)
+            inners = tuple(
+                self.board[r][c].board_key() for r in range(3) for c in range(3)
+            )
+            base = ("main", restriction) + inners
+
+        if turn is None:
+            return base
+        return ("turn", turn.value) + base
+
+    @staticmethod
+    def from_key(key: tuple) -> tuple[Board, Piece | None]:
+        """Rebuild a board from a board_key (recomputes board_state). Returns (board, turn)."""
+        if not key:
+            raise ValueError("Empty board key")
+
+        tag = key[0]
+        if tag == "turn":
+            if len(key) < 3:
+                raise ValueError("Invalid turn-prefixed key length")
+            turn = Piece(key[1])
+            board, _ = Board.from_key(key[2:])
+            return board, turn
+        if tag == "inner":
+            if len(key) != 10:
+                raise ValueError("Invalid inner board key length")
+            b = Board(piece_factory=lambda: Piece.EMPTY)
+            b.is_inner = True
+            idx = 1
+            for r in range(3):
+                for c in range(3):
+                    b.board[r][c] = Piece(key[idx])
+                    idx += 1
+            b.empty_cells = {
+                (r, c)
+                for r in range(3)
+                for c in range(3)
+                if b.board[r][c] == Piece.EMPTY
+            }
+            b.board_state = b.get_game_state()
+            return b, None
+
+        if tag == "main":
+            if len(key) != 11:
+                raise ValueError("Invalid main board key length")
+            b = Board(piece_factory=lambda: Board())
+            b.is_inner = False
+            restriction = key[1]
+            b.restriction = None if restriction == (-1, -1) else restriction
+            idx = 2
+            for r in range(3):
+                for c in range(3):
+                    b.board[r][c] = Board.from_key(key[idx])
+                    idx += 1
+            b._refresh_playable_outers()
+            b.board_state = b.get_game_state()
+            return b, None
+
+        raise ValueError("Unknown board key tag")
+
 
 def get_board() -> Board:
     """Returns a main board composed of 9 inner boards."""
     return Board(piece_factory=lambda: Board())
-
-
-def legal_moves(
-    board: Board, piece: Piece, restriction: Tuple[int, int] | None = None
-) -> list[Move]:
-    """All valid moves given a restriction (defaults to board.restriction)."""
-    moves: list[Move] = []
-
-    # choose outers
-    use_restr = board.restriction if restriction is None else restriction
-    if use_restr is not None and use_restr in board.playable_outers_set:
-        outers = [use_restr]
-    else:
-        outers = board.playable_outers_list
-
-    append = moves.append
-    for R, C in outers:
-        inner = board[R][C]
-        if inner.board_state != BoardState.NOT_FINISHED:
-            continue
-        for r, c in inner.empty_cells:
-            append(Move(piece, (R, C), (r, c)))
-    return moves
 
 
 def swap_piece(p: Piece) -> Piece:

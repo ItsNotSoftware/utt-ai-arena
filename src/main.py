@@ -6,7 +6,7 @@ from typing import Tuple
 
 import pygame
 
-from board import Board, BoardState, Piece, board_state_to_piece, get_board
+from board import Board, BoardState, Piece, board_state_to_piece, get_board, Move
 from player import HumanPlayer, MinimaxPlayer, Player, set_layout
 
 # --- constants ---
@@ -39,9 +39,12 @@ FONT = None
 FONT_BOLD = None
 
 
-def _compute_ai_move(player: Player, board_snapshot: Board, out_q: "queue.Queue") -> None:
+def _compute_ai_move(
+    player: Player, board_snapshot: Board, out_q: "queue.Queue"
+) -> None:
     """Worker process: compute AI move on a snapshot and return it via queue."""
     out_q.put(player.get_move(board_snapshot))
+
 
 # --- setup ---
 pygame.init()
@@ -196,14 +199,15 @@ def draw_main_board(
             x = BOARD_LEFT + c * inner_size
             y = BOARD_TOP + r * inner_size
 
-            # restriction tint
-            if restriction == (r, c):
-                tint = pygame.Surface((inner_size, inner_size), pygame.SRCALPHA)
-                tint.fill((255, 230, 120, 70))
-                screen.blit(tint, (x, y))
-
             surface = render_inner_board(board[r][c], inner_size)
             screen.blit(surface, (x, y))
+
+            if restriction is not None and restriction != (r, c):
+                dim = pygame.Surface((inner_size, inner_size), pygame.SRCALPHA)
+                dim.fill((20, 20, 20, 18))
+                screen.blit(dim, (x, y))
+            elif restriction == (r, c):
+                pass
 
     # big dividers
     for i in range(1, 3):
@@ -307,16 +311,11 @@ def game_loop() -> bool:
     p1 = MinimaxPlayer(
         Piece.X, depth_limit=7, use_heuristic_eval=True, use_pruning=True
     )
-    p2 = MinimaxPlayer(
-        Piece.O,
-        depth_limit=5,
-        use_heuristic_eval=True,
-        use_pruning=False,
-    )
+    p2 = HumanPlayer(piece=Piece.O)
 
     current = p1 if time.time() % 2 < 1 else p2
     last_invalid_until = 0.0
-    pending_move: Move | None = None
+    pending_move = None
     ai_process: multiprocessing.Process | None = None
     mp_ctx = (
         multiprocessing.get_context("fork")

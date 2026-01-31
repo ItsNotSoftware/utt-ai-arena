@@ -2,6 +2,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from time import perf_counter
 from typing import Tuple
+from dataclasses import dataclass, field
 import math
 import random
 
@@ -11,16 +12,116 @@ from board import (
     Move,
     Piece,
     board_state_to_piece,
-    legal_moves,
     swap_piece,
 )
 
-# Layout (set from main)
+# Layout
 _screen_w = 0
 _screen_h = 0
 _board_size = 0
 _board_left = 0
 _board_top = 0
+
+# Heuristic scores
+heuristics = {
+    "win": 1_000,
+    "draw": 0,
+    "two_in_row_outer": 100,
+    "inner_win": 50,
+    "two_in_row_inner": 10,
+    "center_corner": 3,
+}
+
+
+def evaluate_board(board: Board) -> float:
+    "Heuristic eval"
+    boards = [board[i][j] for i in range(3) for j in range(3)]
+    heur = heuristics
+    score = 0.0
+
+    # Score utilities
+    def inner_line_score(values: list[Piece]) -> float:
+        """Two-in-a-row patterns inside an inner board."""
+        x_count = values.count(Piece.X)
+        o_count = values.count(Piece.O)
+        empty_count = values.count(Piece.EMPTY)
+
+        if x_count == 2 and o_count == 0 and empty_count == 1:
+            return heur["two_in_row_inner"]
+        if o_count == 2 and x_count == 0 and empty_count == 1:
+            return -heur["two_in_row_inner"]
+        return 0.0
+
+    def outer_line_score(values: list[Piece]) -> float:
+        """Two-in-a-row patterns across inner board results."""
+        x_count = values.count(Piece.X)
+        o_count = values.count(Piece.O)
+        empty_count = values.count(Piece.EMPTY)
+
+        if x_count == 2 and o_count == 0 and empty_count == 1:
+            return heur["two_in_row_outer"]
+        if o_count == 2 and x_count == 0 and empty_count == 1:
+            return -heur["two_in_row_outer"]
+        return 0.0
+
+    important_positions = {(0, 0), (0, 2), (1, 1), (2, 0), (2, 2)}
+
+    # Outer board heuristic: based on inner board outcomes
+    outer_values = [
+        [board_state_to_piece(board[r][c].board_state) for c in range(3)]
+        for r in range(3)
+    ]
+
+    for r in range(3):
+        score += outer_line_score([outer_values[r][c] for c in range(3)])
+        score += outer_line_score([outer_values[c][r] for c in range(3)])
+    score += outer_line_score([outer_values[i][i] for i in range(3)])
+    score += outer_line_score([outer_values[2 - i][i] for i in range(3)])
+
+    # Reward controlling critical inner boards (outer center/corners)
+    for r in range(3):
+        for c in range(3):
+            inner_board = board[r][c]
+            value = board_state_to_piece(inner_board.board_state)
+            if (r, c) in important_positions:
+                if value == Piece.X:
+                    score += heur["center_corner"]
+                elif value == Piece.O:
+                    score -= heur["center_corner"]
+
+    # Evaluate each inner board
+    for inner in boards:
+        if inner.board_state == BoardState.X_WON:
+            score += heur["inner_win"]
+        elif inner.board_state == BoardState.O_WON:
+            score -= heur["inner_win"]
+
+        # Reward center/corner occupancy inside inner boards
+        for r in range(3):
+            for c in range(3):
+                piece = inner[r][c]
+                if piece == Piece.EMPTY:
+                    continue
+                if (r, c) in important_positions:
+                    if piece == Piece.X:
+                        score += heur["center_corner"]
+                    elif piece == Piece.O:
+                        score -= heur["center_corner"]
+
+        if inner.board_state != BoardState.NOT_FINISHED:
+            continue
+
+        # Two-in-a-row patterns inside an unfinished inner board
+        for r in range(3):
+            row_values = [inner[r][c] for c in range(3)]
+            col_values = [inner[c][r] for c in range(3)]
+            score += inner_line_score(row_values)
+            score += inner_line_score(col_values)
+
+        score += inner_line_score([inner[i][i] for i in range(3)])
+        score += inner_line_score([inner[2 - i][i] for i in range(3)])
+
+    return score
 
 
 def set_layout(
@@ -35,9 +136,8 @@ def set_layout(
 class Player(ABC):
     """Abstract player."""
 
-    def __init__(self, piece: Piece, depth_limit: int = 0) -> None:
+    def __init__(self, piece: Piece) -> None:
         self.piece = piece
-        self.depth_limit = depth_limit
         self.name = "Player"
         self._move_count = 0
         self._move_time_total = 0.0
@@ -48,14 +148,16 @@ class Player(ABC):
     def get_move(self, board: Board) -> Move | None:
         start = perf_counter()
         move = self._select_move(board)
-        duration = perf_counter() - start
-        self._move_count += 1
-        self._move_time_total += duration
-        avg = self._move_time_total / self._move_count
-        print(
-            f"{self.get_name()} move time: {duration:.3f}s "
-            f"(avg {avg:.3f}s over {self._move_count} move{'s' if self._move_count != 1 else ''})"
-        )
+        if self.name != "HumanPlayer":
+            duration = perf_counter() - start
+            self._move_count += 1
+            self._move_time_total += duration
+            avg = self._move_time_total / self._move_count
+
+            print(
+                f"{self.get_name()} move time: {duration:.3f}s "
+                f"(avg {avg:.3f}s over {self._move_count} move{'s' if self._move_count != 1 else ''})"
+            )
         return move
 
     @abstractmethod
@@ -65,8 +167,8 @@ class Player(ABC):
 class HumanPlayer(Player):
     """Mouse-based human."""
 
-    def __init__(self, piece: Piece, depth_limit: int = 0) -> None:
-        super().__init__(piece, depth_limit)
+    def __init__(self, piece: Piece) -> None:
+        super().__init__(piece)
         self._prev_down = False
         self.name = "HumanPlayer"
 
@@ -107,17 +209,7 @@ class HumanPlayer(Player):
 
 
 class MinimaxPlayer(Player):
-    """Pure minimax (no pruning, no heuristic) using apply/undo."""
-
-    # Heuristic scores
-    heuristics = {
-        "win": 1_000,
-        "draw": 0,
-        "two_in_row_outer": 100,
-        "inner_win": 50,
-        "two_in_row_inner": 10,
-        "center_corner": 3,
-    }
+    """Minimax."""
 
     def __init__(
         self,
@@ -126,8 +218,9 @@ class MinimaxPlayer(Player):
         use_heuristic_eval=True,
         use_pruning=True,
     ) -> None:
-        super().__init__(piece, depth_limit=depth_limit)
+        super().__init__(piece)
         self.name = "Minimax"
+        self.depth_limit = depth_limit
         features = []
         if use_heuristic_eval:
             features.append("heuristic")
@@ -138,98 +231,6 @@ class MinimaxPlayer(Player):
 
         self.use_heuristic_eval = use_heuristic_eval
         self.use_pruning = use_pruning
-
-    def _evaluate_board(self, board: Board) -> float:
-        boards = [board[i][j] for i in range(3) for j in range(3)]
-        heur = self.heuristics
-        score = 0.0
-
-        # Score utilities
-        def inner_line_score(values: list[Piece]) -> float:
-            """Two-in-a-row patterns inside an inner board."""
-            x_count = values.count(Piece.X)
-            o_count = values.count(Piece.O)
-            empty_count = values.count(Piece.EMPTY)
-
-            if x_count == 2 and o_count == 0 and empty_count == 1:
-                return heur["two_in_row_inner"]
-            if o_count == 2 and x_count == 0 and empty_count == 1:
-                return -heur["two_in_row_inner"]
-            return 0.0
-
-        def outer_line_score(values: list[Piece]) -> float:
-            """Two-in-a-row patterns across inner board results."""
-            x_count = values.count(Piece.X)
-            o_count = values.count(Piece.O)
-            empty_count = values.count(Piece.EMPTY)
-
-            if x_count == 2 and o_count == 0 and empty_count == 1:
-                return heur["two_in_row_outer"]
-            if o_count == 2 and x_count == 0 and empty_count == 1:
-                return -heur["two_in_row_outer"]
-            return 0.0
-
-        important_positions = {(0, 0), (0, 2), (1, 1), (2, 0), (2, 2)}
-
-        # Outer board heuristic: based on inner board outcomes
-        outer_values = [
-            [
-                board_state_to_piece(board[r][c].board_state)
-                for c in range(3)
-            ]
-            for r in range(3)
-        ]
-
-        for r in range(3):
-            score += outer_line_score([outer_values[r][c] for c in range(3)])
-            score += outer_line_score([outer_values[c][r] for c in range(3)])
-        score += outer_line_score([outer_values[i][i] for i in range(3)])
-        score += outer_line_score([outer_values[2 - i][i] for i in range(3)])
-
-        # Reward controlling critical inner boards (outer center/corners)
-        for r in range(3):
-            for c in range(3):
-                inner_board = board[r][c]
-                value = board_state_to_piece(inner_board.board_state)
-                if (r, c) in important_positions:
-                    if value == Piece.X:
-                        score += heur["center_corner"]
-                    elif value == Piece.O:
-                        score -= heur["center_corner"]
-
-        # Evaluate each inner board
-        for inner in boards:
-            if inner.board_state == BoardState.X_WON:
-                score += heur["inner_win"]
-            elif inner.board_state == BoardState.O_WON:
-                score -= heur["inner_win"]
-
-            # Reward center/corner occupancy inside inner boards
-            for r in range(3):
-                for c in range(3):
-                    piece = inner[r][c]
-                    if piece == Piece.EMPTY:
-                        continue
-                    if (r, c) in important_positions:
-                        if piece == Piece.X:
-                            score += heur["center_corner"]
-                        elif piece == Piece.O:
-                            score -= heur["center_corner"]
-
-            if inner.board_state != BoardState.NOT_FINISHED:
-                continue
-
-            # Two-in-a-row patterns inside an unfinished inner board
-            for r in range(3):
-                row_values = [inner[r][c] for c in range(3)]
-                col_values = [inner[c][r] for c in range(3)]
-                score += inner_line_score(row_values)
-                score += inner_line_score(col_values)
-
-            score += inner_line_score([inner[i][i] for i in range(3)])
-            score += inner_line_score([inner[2 - i][i] for i in range(3)])
-
-        return score
 
     def _minimax(
         self,
@@ -242,18 +243,18 @@ class MinimaxPlayer(Player):
     ) -> float:
         # Terminal?
         if board.board_state == BoardState.DRAW:
-            return self.heuristics["draw"]
+            return heuristics["draw"]
         elif board.board_state == BoardState.X_WON:
-            return self.heuristics["win"]
+            return heuristics["win"]
         elif board.board_state == BoardState.O_WON:
-            return -self.heuristics["win"]
+            return -heuristics["win"]
 
         # Depth limit
         if depth >= depth_limit:
-            return self._evaluate_board(board) if self.use_heuristic_eval else 0.0
+            return evaluate_board(board) if self.use_heuristic_eval else 0.0
 
         # Children
-        moves = legal_moves(board, piece, board.restriction)
+        moves = board.legal_moves(piece)
         if not moves:
             return 0.0
 
@@ -288,7 +289,7 @@ class MinimaxPlayer(Player):
 
     def _select_move(self, board: Board) -> Move | None:
         # get legal moves
-        moves = legal_moves(board, self.piece, board.restriction)
+        moves = board.legal_moves(self.piece)
 
         # allow for random move selection when multiple have the same eval
         random.shuffle(moves)
@@ -337,3 +338,54 @@ class MinimaxPlayer(Player):
                 break
 
         return best_move
+
+
+@dataclass
+class McState:
+    board: Board
+    scores: list[int] = field(default_factory=list)
+    n_visits: int = 0
+    parent: tuple | None = None
+    ucb: float = math.inf
+
+
+class MonteCarloPlayer(Player):
+
+    def __init__(self, piece: Piece, iter_nr: int) -> None:
+        super().__init__(piece)
+        self.name = "MonteCarlo"
+        self.iter_nr = iter_nr
+        self.state_tree: dict[tuple, McState] = {}
+
+    @staticmethod
+    def Q(s, a) -> None:
+        pass
+
+    def _ucb(self, s: McState, c: float = math.sqrt(2)) -> float:
+        """
+        Xi is the average reward of node i
+        c is the exploration parameter (typically √2)
+        N is the total number of visits to the parent node
+        ni is the number of visits to node i
+        """
+        # TODO: parent = None case
+        # Xi + c*sqrt(ln(N)/ni)
+        parent = self.state_tree.get(s.parent)
+        return s.scores / len(s.scores) + c * math.sqr(parent.n_visits / s.n_visits)
+
+    def _select(self) -> None:
+        pass
+
+    def _expand(self) -> None:
+        pass
+
+    def _simulate(self) -> None:
+        pass
+
+    def _backprop(self) -> None:
+        pass
+
+    def _select_move(self, board: Board) -> Move | None:
+        moves = board.legal_moves(self.piece)
+
+        pass
