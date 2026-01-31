@@ -341,12 +341,13 @@ class MinimaxPlayer(Player):
 
 
 @dataclass
-class McState:
+class McNode:
     board: Board
-    scores: list[int] = field(default_factory=list)
+    parent: McNode | None
+    children: list[McNode] = field(default_factory=list)
+    # ? children: dict[action, McNode]
+    total_value: float = 0.0
     n_visits: int = 0
-    parent: tuple | None = None
-    ucb: float = math.inf
 
 
 class MonteCarloPlayer(Player):
@@ -355,13 +356,13 @@ class MonteCarloPlayer(Player):
         super().__init__(piece)
         self.name = "MonteCarlo"
         self.iter_nr = iter_nr
-        self.state_tree: dict[tuple, McState] = {}
+        self.root = None
 
     @staticmethod
     def Q(s, a) -> None:
         pass
 
-    def _ucb(self, s: McState, c: float = math.sqrt(2)) -> float:
+    def _ucb(self, parent: McNode, node: McNode, c: float = math.sqrt(2)) -> float:
         """
         Xi is the average reward of node i
         c is the exploration parameter (typically √2)
@@ -370,16 +371,28 @@ class MonteCarloPlayer(Player):
         """
         # TODO: parent = None case
         # Xi + c*sqrt(ln(N)/ni)
-        parent = self.state_tree.get(s.parent)
-        return s.scores / len(s.scores) + c * math.sqr(parent.n_visits / s.n_visits)
+        return node.scores / len(node.scores) + c * math.sqr(
+            parent.n_visits / node.n_visits
+        )
 
     def _select(self) -> None:
+        max_ucb = -math.inf
+        selected = self.root.children[0]
+
+        for child in self.root.children():
+            ucb = self._ucb(self.root, child)
+            if ucb > max_ucb:
+                max_ucb = ucb
+                selected = child
+            elif ucb == max_ucb:  # in case of tie randomly select one
+                selected = random.choice([selected, child])
+
+        return selected
+
+    def _expand(self, node: McNode) -> None:
         pass
 
-    def _expand(self) -> None:
-        pass
-
-    def _simulate(self) -> None:
+    def _simulate(self) -> int:
         pass
 
     def _backprop(self) -> None:
@@ -387,5 +400,16 @@ class MonteCarloPlayer(Player):
 
     def _select_move(self, board: Board) -> Move | None:
         moves = board.legal_moves(self.piece)
+        self.root = McNode(board, None)
 
-        pass
+        # insert legal moves in tree
+        for m in moves:
+            child = board.clone()
+            child.place_piece(self.piece)
+            self.root.children.append(child)
+
+        for i in range(self.iter_nr):
+            node = self._select()
+            self._expand(node)
+            score = self._simuate()
+            self._backprop()

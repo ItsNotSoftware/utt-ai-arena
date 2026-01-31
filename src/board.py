@@ -319,7 +319,7 @@ class Board:
                 append(Move(piece, (R, C), (r, c)))
         return moves
 
-    def board_key(self, turn: Piece | None = None) -> tuple:
+    def key(self, turn: Piece | None = None) -> tuple:
         """Immutable key for hashing/caching. Optionally include turn."""
         if self.is_inner:
             # 9 cells as piece values
