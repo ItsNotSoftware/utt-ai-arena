@@ -214,7 +214,7 @@ class MinimaxPlayer(Player):
     def __init__(
         self,
         piece: Piece,
-        depth_limit: int = 0,
+        depth_limit: int = 6,
         use_heuristic_eval=True,
         use_pruning=True,
     ) -> None:
@@ -242,12 +242,13 @@ class MinimaxPlayer(Player):
         beta: float | None,
     ) -> float:
         # Terminal?
-        if board.board_state == BoardState.DRAW:
-            return heuristics["draw"]
-        elif board.board_state == BoardState.X_WON:
-            return heuristics["win"]
-        elif board.board_state == BoardState.O_WON:
-            return -heuristics["win"]
+        match board.board_state:
+            case BoardState.DRAW:
+                return heuristics["draw"]
+            case BoardState.X_WON:
+                return heuristics["win"]
+            case BoardState.O_WON:
+                return -heuristics["win"]
 
         # Depth limit
         if depth >= depth_limit:
@@ -344,72 +345,146 @@ class MinimaxPlayer(Player):
 class McNode:
     board: Board
     parent: McNode | None
-    children: list[McNode] = field(default_factory=list)
-    # ? children: dict[action, McNode]
+    children: dict[Move, McNode]
+    turn: Piece
     total_value: float = 0.0
     n_visits: int = 0
 
 
 class MonteCarloPlayer(Player):
 
-    def __init__(self, piece: Piece, iter_nr: int) -> None:
+    def __init__(
+        self, piece: Piece, iter_nr: int = 10000, use_heuristics: bool = False
+    ) -> None:
         super().__init__(piece)
         self.name = "MonteCarlo"
         self.iter_nr = iter_nr
         self.root = None
+        self.use_heuristics = use_heuristics
 
     @staticmethod
     def Q(s, a) -> None:
         pass
 
     def _ucb(self, parent: McNode, node: McNode, c: float = math.sqrt(2)) -> float:
-        """
-        Xi is the average reward of node i
-        c is the exploration parameter (typically √2)
-        N is the total number of visits to the parent node
-        ni is the number of visits to node i
-        """
-        # TODO: parent = None case
-        # Xi + c*sqrt(ln(N)/ni)
-        return node.scores / len(node.scores) + c * math.sqr(
-            parent.n_visits / node.n_visits
-        )
+        if node.n_visits == 0:
+            return math.inf
+        parent_visits = max(1, parent.n_visits)
+        exploitation = node.total_value / node.n_visits
+        exploration = c * math.sqrt(math.log(parent_visits) / node.n_visits)
+        return exploitation + exploration
 
-    def _select(self) -> None:
-        max_ucb = -math.inf
-        selected = self.root.children[0]
+    def _select(self, root: McNode) -> McNode:
+        current = root
 
-        for child in self.root.children():
-            ucb = self._ucb(self.root, child)
-            if ucb > max_ucb:
-                max_ucb = ucb
-                selected = child
-            elif ucb == max_ucb:  # in case of tie randomly select one
-                selected = random.choice([selected, child])
+        while True:
+            legal_moves = current.board.legal_moves(current.turn)
+            if not legal_moves:
+                return current
+            if any(m not in current.children for m in legal_moves):
+                return current
+            max_ucb = -math.inf
+            best_children = []
 
-        return selected
+            for m, child in current.children.items():
+                if m not in legal_moves:
+                    continue
+                ucb = self._ucb(current, child)
 
-    def _expand(self, node: McNode) -> None:
-        pass
+                if ucb > max_ucb:
+                    max_ucb = ucb
+                    best_children = [child]
+                elif ucb == max_ucb:
+                    best_children.append(child)
 
-    def _simulate(self) -> int:
-        pass
+            # tie-break randomly among best
+            current = random.choice(best_children)
 
-    def _backprop(self) -> None:
-        pass
+    def _expand(self, node: McNode) -> McNode:
+        moves = node.board.legal_moves(node.turn)
+        untried = [m for m in moves if m not in node.children]
+        if not untried:
+            return node
+        move = random.choice(untried)
+        new_board = node.board.clone()
+        token = new_board.make_move(move)
+        if token is None:
+            return node
+        child = McNode(new_board, node, {}, swap_piece(node.turn))
+        node.children[move] = child
+        return child
+
+    def _simulate(self, node: McNode) -> int:
+        base = 1 if self.piece == Piece.X else -1
+        sim_board = node.board.clone()
+        turn = node.turn
+
+        while True:
+            match sim_board.board_state:
+                case BoardState.DRAW:
+                    return 0
+                case BoardState.X_WON:
+                    return base
+                case BoardState.O_WON:
+                    return -base
+
+            moves = sim_board.legal_moves(turn)
+            if not moves:
+                return 0
+
+            if self.use_heuristics:
+                best_score = -math.inf if turn == Piece.X else math.inf
+                best_moves = []
+                for m in moves:
+                    token = sim_board.make_move(m)
+                    if token is None:
+                        continue
+                    score = evaluate_board(sim_board)
+                    sim_board.undo_move(token)
+                    if turn == Piece.X:
+                        if score > best_score:
+                            best_score = score
+                            best_moves = [m]
+                        elif score == best_score:
+                            best_moves.append(m)
+                    else:
+                        if score < best_score:
+                            best_score = score
+                            best_moves = [m]
+                        elif score == best_score:
+                            best_moves.append(m)
+                move = random.choice(best_moves) if best_moves else random.choice(moves)
+            else:
+                move = random.choice(moves)
+
+            token = sim_board.make_move(move)
+            if token is None:
+                return 0
+            turn = swap_piece(turn)
+
+    def _backprop(self, node: McNode, value: float) -> None:
+        current = node
+        while current is not None:
+            current.n_visits += 1
+            current.total_value += value
+            current = current.parent
 
     def _select_move(self, board: Board) -> Move | None:
         moves = board.legal_moves(self.piece)
-        self.root = McNode(board, None)
-
-        # insert legal moves in tree
-        for m in moves:
-            child = board.clone()
-            child.place_piece(self.piece)
-            self.root.children.append(child)
+        if not moves:
+            return None
+        self.root = McNode(board.clone(), None, {}, self.piece)
 
         for i in range(self.iter_nr):
-            node = self._select()
-            self._expand(node)
-            score = self._simuate()
-            self._backprop()
+            node = self._select(self.root)
+            expanded = self._expand(node)
+            score = self._simulate(expanded)
+            self._backprop(expanded, score)
+
+        best_move = None
+        best_visits = -1
+        for m, child in self.root.children.items():
+            if child.n_visits > best_visits:
+                best_visits = child.n_visits
+                best_move = m
+        return best_move if best_move is not None else random.choice(moves)

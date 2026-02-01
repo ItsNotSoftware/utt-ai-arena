@@ -4,16 +4,14 @@
 
 [x] Alpha–Beta Pruning
 
-[] Monte Carlo Simulation (Flat Monte Carlo)
+[x] Monte Carlo Tree Search (MCTS)
 
-[] Monte Carlo Tree Search (MCTS)
+[ ] Tabular Q-Learning
 
-[] Tabular Q-Learning
+[ ] Basic reinforcement learning via self-play
 
-[] Basic reinforcement learning via self-play
+[ ] Deep Q-Network (DQN)
 
-[] Deep Q-Network (DQN)
+[ ] Policy Gradient (REINFORCE or PPO)
 
-[] Policy Gradient (REINFORCE or PPO)
-
-[] RL + MCTS 
+[ ] RL + MCTS 

@@ -10,7 +10,7 @@ class Piece(IntEnum):
     X = 1
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class Move:
     piece: Piece
     outer: Tuple[int, int]  # outer board position select
