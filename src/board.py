@@ -337,6 +337,10 @@ class Board:
             return base
         return ("turn", turn.value) + base
 
+    def board_key(self) -> tuple:
+        """Alias for key() to keep hash usage consistent."""
+        return self.key()
+
     @staticmethod
     def from_key(key: tuple) -> tuple[Board, Piece | None]:
         """Rebuild a board from a board_key (recomputes board_state). Returns (board, turn)."""
@@ -379,7 +383,8 @@ class Board:
             idx = 2
             for r in range(3):
                 for c in range(3):
-                    b.board[r][c] = Board.from_key(key[idx])
+                    inner, _ = Board.from_key(key[idx])
+                    b.board[r][c] = inner
                     idx += 1
             b._refresh_playable_outers()
             b.board_state = b.get_game_state()

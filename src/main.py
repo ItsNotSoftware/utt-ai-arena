@@ -39,8 +39,8 @@ FONT = None
 FONT_BOLD = None
 
 # --- menu defaults ---
-MC_DEFAULT_ITERS = 1000
-MC_DEFAULT_HEURISTICS = True
+MC_DEFAULT_ITERS = 10000
+MC_DEFAULT_HEURISTICS = False
 MINIMAX_DEFAULT_DEPTH = 6
 MINIMAX_DEFAULT_HEURISTICS = True
 MINIMAX_DEFAULT_PRUNING = True
@@ -66,6 +66,7 @@ FONT_BOLD = pygame.font.SysFont("Georgia", 36, bold=True)
 def draw_endgame_overlay(screen: pygame.Surface, state: BoardState) -> None:
     """Big 'X wins! / O wins! / Draw' centered over the main board."""
     big_font = pygame.font.SysFont(None, 110)
+    note_font = pygame.font.SysFont(None, 32)
 
     if state == BoardState.X_WON:
         msg, col = "X wins!", X_COLOR
@@ -90,6 +91,12 @@ def draw_endgame_overlay(screen: pygame.Surface, state: BoardState) -> None:
 
     screen.blit(outline, (tx + 2, ty + 2))
     screen.blit(text, (tx, ty))
+
+    note = "(press any key)"
+    note_text = note_font.render(note, True, LBL_COLOR)
+    nx = cx - note_text.get_width() // 2
+    ny = ty + text.get_height() + 10
+    screen.blit(note_text, (nx, ny))
 
 
 def idx_to_label(rc: Tuple[int, int]) -> str:
@@ -437,8 +444,8 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
                 if event.key == pygame.K_ESCAPE:
                     return None
                 if event.key == pygame.K_RETURN:
-                    left_choice = options[selected[0]][1]
-                    right_choice = options[selected[1]][1]
+                    left_choice = options[selected[0]]["key"]
+                    right_choice = options[selected[1]]["key"]
                     left_params = params[0][left_choice]
                     right_params = params[1][right_choice]
                     return (left_choice, dict(left_params)), (
@@ -457,8 +464,8 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
                     if right_rect.collidepoint(mx, my):
                         selected[1] = idx
                 if start_rect.collidepoint(mx, my):
-                    left_choice = options[selected[0]][1]
-                    right_choice = options[selected[1]][1]
+                    left_choice = options[selected[0]]["key"]
+                    right_choice = options[selected[1]]["key"]
                     left_params = params[0][left_choice]
                     right_params = params[1][right_choice]
                     return (left_choice, dict(left_params)), (
@@ -672,7 +679,7 @@ def game_loop(p1_choice: str, p1_params: dict, p2_choice: str, p2_params: dict) 
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         return False
-                    if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                    if event.type == pygame.KEYDOWN:
                         waiting = False
                         break
                 clock.tick(60)

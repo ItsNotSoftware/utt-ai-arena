@@ -217,6 +217,8 @@ class MinimaxPlayer(Player):
         depth_limit: int = 6,
         use_heuristic_eval=True,
         use_pruning=True,
+        use_cache: bool = True,
+        max_cache: int = 200_000,
     ) -> None:
         super().__init__(piece)
         self.name = "Minimax"
@@ -226,11 +228,16 @@ class MinimaxPlayer(Player):
             features.append("heuristic")
         if use_pruning:
             features.append("pruning")
+        if use_cache:
+            features.append("cache")
         if features:
             self.name += " (" + ", ".join(features) + ")"
 
         self.use_heuristic_eval = use_heuristic_eval
         self.use_pruning = use_pruning
+        self.use_cache = use_cache
+        self._tt: dict[tuple, float] = {}
+        self._tt_max = max_cache
 
     def _minimax(
         self,
@@ -241,18 +248,46 @@ class MinimaxPlayer(Player):
         alpha: float | None,
         beta: float | None,
     ) -> float:
+        self._nodes_visited += 1
+        tt_key = None
+        if self.use_cache:
+            depth_remaining = depth_limit - depth
+            tt_key = (board.key(piece), depth_remaining)
+            if tt_key in self._tt:
+                return self._tt[tt_key]
+
         # Terminal?
         match board.board_state:
             case BoardState.DRAW:
-                return heuristics["draw"]
+                value = heuristics["draw"]
+                if self.use_cache and tt_key is not None:
+                    if len(self._tt) >= self._tt_max:
+                        self._tt.clear()
+                    self._tt[tt_key] = value
+                return value
             case BoardState.X_WON:
-                return heuristics["win"]
+                value = heuristics["win"]
+                if self.use_cache and tt_key is not None:
+                    if len(self._tt) >= self._tt_max:
+                        self._tt.clear()
+                    self._tt[tt_key] = value
+                return value
             case BoardState.O_WON:
-                return -heuristics["win"]
+                value = -heuristics["win"]
+                if self.use_cache and tt_key is not None:
+                    if len(self._tt) >= self._tt_max:
+                        self._tt.clear()
+                    self._tt[tt_key] = value
+                return value
 
         # Depth limit
         if depth >= depth_limit:
-            return evaluate_board(board) if self.use_heuristic_eval else 0.0
+            value = evaluate_board(board) if self.use_heuristic_eval else 0.0
+            if self.use_cache and tt_key is not None:
+                if len(self._tt) >= self._tt_max:
+                    self._tt.clear()
+                self._tt[tt_key] = value
+            return value
 
         # Children
         moves = board.legal_moves(piece)
@@ -286,20 +321,64 @@ class MinimaxPlayer(Player):
                         if beta <= alpha:
                             break
 
+        if self.use_cache and tt_key is not None:
+            if len(self._tt) >= self._tt_max:
+                self._tt.clear()
+            self._tt[tt_key] = best
         return best
+
+    def _order_moves(self, board: Board, moves: list[Move], piece: Piece) -> list[Move]:
+        if not self.use_heuristic_eval or len(moves) < 2:
+            return moves
+        scored: list[tuple[float, Move]] = []
+        for m in moves:
+            token = board.make_move(m)
+            if token is None:
+                continue
+            score = evaluate_board(board)
+            board.undo_move(token)
+            scored.append((score, m))
+        if not scored:
+            return moves
+        reverse = piece == Piece.X
+        scored.sort(key=lambda item: item[0], reverse=reverse)
+        return [m for _, m in scored]
 
     def _select_move(self, board: Board) -> Move | None:
         # get legal moves
         moves = board.legal_moves(self.piece)
 
-        # allow for random move selection when multiple have the same eval
-        random.shuffle(moves)
-
         if not moves:
             return None
 
+        if self.piece == Piece.X and board.restriction is None:
+            is_first_move = True
+            for r in range(3):
+                for c in range(3):
+                    inner = board[r][c]
+                    if (
+                        inner.board_state != BoardState.NOT_FINISHED
+                        or len(inner.empty_cells) != 9
+                    ):
+                        is_first_move = False
+                        break
+                if not is_first_move:
+                    break
+            if is_first_move:
+                return random.choice(moves)
+
+        if self.use_cache:
+            self._tt.clear()
+        self._nodes_visited = 0
+
         maximizing = self.piece == Piece.X
         best_score = -math.inf if maximizing else math.inf
+
+        # order moves for better pruning
+        if self.use_heuristic_eval:
+            moves = self._order_moves(board, moves, self.piece)
+        else:
+            random.shuffle(moves)
         best_move = moves[0]
 
         # Evaluate candidate moves sequentially
@@ -315,6 +394,11 @@ class MinimaxPlayer(Player):
             if token is None:
                 # Should not happen with legal_moves;
                 continue
+            if (board.board_state == BoardState.X_WON and self.piece == Piece.X) or (
+                board.board_state == BoardState.O_WON and self.piece == Piece.O
+            ):
+                board.undo_move(token)
+                return m
             score = self._minimax(
                 swap_piece(self.piece), board, 1, self.depth_limit, alpha, beta
             )
@@ -347,6 +431,7 @@ class McNode:
     parent: McNode | None
     children: dict[Move, McNode]
     turn: Piece
+    untried_moves: list[Move] = field(default_factory=list)
     total_value: float = 0.0
     n_visits: int = 0
 
@@ -357,7 +442,7 @@ class MonteCarloPlayer(Player):
         self, piece: Piece, iter_nr: int = 10000, use_heuristics: bool = False
     ) -> None:
         super().__init__(piece)
-        self.name = "MonteCarlo"
+        self.name = "MonteCarlo Tree Search"
         self.iter_nr = iter_nr
         self.root = None
         self.use_heuristics = use_heuristics
@@ -374,21 +459,27 @@ class MonteCarloPlayer(Player):
         exploration = c * math.sqrt(math.log(parent_visits) / node.n_visits)
         return exploitation + exploration
 
+    def _new_node(self, board: Board, parent: McNode | None, turn: Piece) -> McNode:
+        return McNode(
+            board=board,
+            parent=parent,
+            children={},
+            turn=turn,
+            untried_moves=board.legal_moves(turn),
+        )
+
     def _select(self, root: McNode) -> McNode:
         current = root
 
         while True:
-            legal_moves = current.board.legal_moves(current.turn)
-            if not legal_moves:
+            if not current.untried_moves and not current.children:
                 return current
-            if any(m not in current.children for m in legal_moves):
+            if current.untried_moves:
                 return current
             max_ucb = -math.inf
             best_children = []
 
             for m, child in current.children.items():
-                if m not in legal_moves:
-                    continue
                 ucb = self._ucb(current, child)
 
                 if ucb > max_ucb:
@@ -401,16 +492,14 @@ class MonteCarloPlayer(Player):
             current = random.choice(best_children)
 
     def _expand(self, node: McNode) -> McNode:
-        moves = node.board.legal_moves(node.turn)
-        untried = [m for m in moves if m not in node.children]
-        if not untried:
+        if not node.untried_moves:
             return node
-        move = random.choice(untried)
+        move = node.untried_moves.pop(random.randrange(0, len(node.untried_moves)))
         new_board = node.board.clone()
         token = new_board.make_move(move)
         if token is None:
             return node
-        child = McNode(new_board, node, {}, swap_piece(node.turn))
+        child = self._new_node(new_board, node, swap_piece(node.turn))
         node.children[move] = child
         return child
 
@@ -473,7 +562,7 @@ class MonteCarloPlayer(Player):
         moves = board.legal_moves(self.piece)
         if not moves:
             return None
-        self.root = McNode(board.clone(), None, {}, self.piece)
+        self.root = self._new_node(board.clone(), None, self.piece)
 
         for i in range(self.iter_nr):
             node = self._select(self.root)
