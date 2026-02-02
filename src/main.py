@@ -38,6 +38,13 @@ INNER_MARGIN = 16  # margin inside each inner board
 FONT = None
 FONT_BOLD = None
 
+# --- menu defaults ---
+MC_DEFAULT_ITERS = 1000
+MC_DEFAULT_HEURISTICS = True
+MINIMAX_DEFAULT_DEPTH = 6
+MINIMAX_DEFAULT_HEURISTICS = True
+MINIMAX_DEFAULT_PRUNING = True
+
 
 def _compute_ai_move(
     player: Player, board_snapshot: Board, out_q: "queue.Queue"
@@ -305,11 +312,288 @@ def draw_status_bar(
         screen.blit(msg, (SCREEN_SIZE - msg.get_width() - pad, y0 + 16))
 
 
-def game_loop() -> bool:
+def _make_player(choice: str, piece: Piece, params: dict | None = None) -> Player:
+    params = params or {}
+    if choice == "human":
+        return HumanPlayer(piece)
+    if choice == "minimax":
+        return MinimaxPlayer(
+            piece,
+            depth_limit=int(params.get("depth", MINIMAX_DEFAULT_DEPTH)),
+            use_heuristic_eval=bool(
+                params.get("heuristics", MINIMAX_DEFAULT_HEURISTICS)
+            ),
+            use_pruning=bool(params.get("pruning", MINIMAX_DEFAULT_PRUNING)),
+        )
+    if choice == "mcts":
+        return MonteCarloPlayer(
+            piece=piece,
+            iter_nr=int(params.get("iters", MC_DEFAULT_ITERS)),
+            use_heuristics=MC_DEFAULT_HEURISTICS,
+        )
+    raise ValueError(f"Unknown player choice: {choice}")
+
+
+def _draw_menu_option(
+    screen: pygame.Surface,
+    rect: pygame.Rect,
+    label: str,
+    selected: bool,
+) -> None:
+    if selected:
+        pygame.draw.rect(screen, LINE_COLOR, rect, border_radius=10)
+        inner = rect.inflate(-6, -6)
+        pygame.draw.rect(screen, BOARD_BG, inner, border_radius=8)
+    else:
+        pygame.draw.rect(screen, BAR_BG, rect, border_radius=10)
+        pygame.draw.rect(screen, BORDER, rect, width=1, border_radius=10)
+
+    text = FONT.render(label, True, LBL_COLOR)
+    screen.blit(
+        text,
+        (rect.centerx - text.get_width() // 2, rect.centery - text.get_height() // 2),
+    )
+
+
+def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
+    options = [
+        {"label": "Human", "key": "human", "params": {}},
+        {
+            "label": "Minimax",
+            "key": "minimax",
+            "params": {
+                "depth": MINIMAX_DEFAULT_DEPTH,
+                "heuristics": MINIMAX_DEFAULT_HEURISTICS,
+                "pruning": MINIMAX_DEFAULT_PRUNING,
+            },
+        },
+        {
+            "label": "MonteCarlo",
+            "key": "mcts",
+            "params": {"iters": MC_DEFAULT_ITERS},
+        },
+    ]
+
+    param_specs = {
+        "minimax": [
+            {"name": "depth", "label": "Depth*", "type": "int", "step": 1, "min": 0},
+            {"name": "heuristics", "label": "Heuristic", "type": "bool"},
+            {"name": "pruning", "label": "Pruning*", "type": "bool"},
+        ],
+        "mcts": [
+            {
+                "name": "iters",
+                "label": "Nr of sims*",
+                "type": "int",
+                "step": 100,
+                "min": 100,
+            }
+        ],
+    }
+
+    keymap = {
+        0: {
+            "dec": pygame.K_q,
+            "inc": pygame.K_w,
+            "toggle1": pygame.K_e,
+            "toggle2": pygame.K_r,
+        },
+        1: {
+            "dec": pygame.K_u,
+            "inc": pygame.K_i,
+            "toggle1": pygame.K_o,
+            "toggle2": pygame.K_p,
+        },
+    }
+
+    selected = [0, 0]  # p1, p2
+    params = [
+        {opt["key"]: dict(opt["params"]) for opt in options},
+        {opt["key"]: dict(opt["params"]) for opt in options},
+    ]
+
+    title_font = pygame.font.SysFont("Georgia", 44, bold=True)
+    sub_font = pygame.font.SysFont("Georgia", 26, bold=True)
+    tiny_font = pygame.font.SysFont("Georgia", 22, bold=False)
+    param_font = pygame.font.SysFont("Georgia", 24, bold=False)
+
+    col_w = 340
+    gap = 80
+    top = 200
+    opt_h = 56
+    opt_gap = 16
+
+    start_rect = pygame.Rect(SCREEN_SIZE // 2 - 140, SCREEN_SIZE - 160, 280, 64)
+
+    while True:
+        left_x = SCREEN_SIZE // 2 - col_w - gap // 2
+        right_x = SCREEN_SIZE // 2 + gap // 2
+        params_y = top + len(options) * (opt_h + opt_gap) + 16
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return None
+                if event.key == pygame.K_RETURN:
+                    left_choice = options[selected[0]][1]
+                    right_choice = options[selected[1]][1]
+                    left_params = params[0][left_choice]
+                    right_params = params[1][right_choice]
+                    return (left_choice, dict(left_params)), (
+                        right_choice,
+                        dict(right_params),
+                    )
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                # left column
+                for idx in range(len(options)):
+                    y = top + idx * (opt_h + opt_gap)
+                    left_rect = pygame.Rect(left_x, y, col_w, opt_h)
+                    right_rect = pygame.Rect(right_x, y, col_w, opt_h)
+                    if left_rect.collidepoint(mx, my):
+                        selected[0] = idx
+                    if right_rect.collidepoint(mx, my):
+                        selected[1] = idx
+                if start_rect.collidepoint(mx, my):
+                    left_choice = options[selected[0]][1]
+                    right_choice = options[selected[1]][1]
+                    left_params = params[0][left_choice]
+                    right_params = params[1][right_choice]
+                    return (left_choice, dict(left_params)), (
+                        right_choice,
+                        dict(right_params),
+                    )
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_a, pygame.K_d):
+                    selected[0] = (selected[0] - 1) % len(options)
+                if event.key in (pygame.K_s, pygame.K_f):
+                    selected[0] = (selected[0] + 1) % len(options)
+                if event.key in (pygame.K_j, pygame.K_l):
+                    selected[1] = (selected[1] - 1) % len(options)
+                if event.key in (pygame.K_k, pygame.K_SEMICOLON):
+                    selected[1] = (selected[1] + 1) % len(options)
+
+                def _apply_param_keys(player_idx: int) -> None:
+                    choice = options[selected[player_idx]]["key"]
+                    specs = param_specs.get(choice, [])
+                    player_keys = keymap[player_idx]
+                    p = params[player_idx][choice]
+                    for spec_idx, spec in enumerate(specs):
+                        if spec["type"] == "int" and spec_idx == 0:
+                            if event.key == player_keys["dec"]:
+                                step = spec.get("step", 1)
+                                min_val = spec.get("min", 0)
+                                p[spec["name"]] = max(min_val, p[spec["name"]] - step)
+                            if event.key == player_keys["inc"]:
+                                step = spec.get("step", 1)
+                                p[spec["name"]] = p[spec["name"]] + step
+                        if spec["type"] == "bool" and spec_idx == 1:
+                            if event.key == player_keys["toggle1"]:
+                                p[spec["name"]] = not p[spec["name"]]
+                        if spec["type"] == "bool" and spec_idx == 2:
+                            if event.key == player_keys["toggle2"]:
+                                p[spec["name"]] = not p[spec["name"]]
+
+                _apply_param_keys(0)
+                _apply_param_keys(1)
+
+        screen.fill(BG)
+        title = title_font.render("Select Players", True, BORDER)
+        screen.blit(
+            title,
+            (SCREEN_SIZE // 2 - title.get_width() // 2, 32),
+        )
+
+        p1_label = sub_font.render("Player X", True, X_COLOR)
+        p2_label = sub_font.render("Player O", True, O_COLOR)
+        screen.blit(p1_label, (left_x, top - 40))
+        screen.blit(p2_label, (right_x, top - 40))
+
+        for idx, opt in enumerate(options):
+            label = opt["label"]
+            y = top + idx * (opt_h + opt_gap)
+            left_rect = pygame.Rect(left_x, y, col_w, opt_h)
+            right_rect = pygame.Rect(right_x, y, col_w, opt_h)
+            _draw_menu_option(screen, left_rect, label, selected[0] == idx)
+            _draw_menu_option(screen, right_rect, label, selected[1] == idx)
+
+        # params panes
+        left_choice = options[selected[0]]["key"]
+        right_choice = options[selected[1]]["key"]
+
+        def _render_params(
+            x: int,
+            choice: str,
+            p: dict,
+            keys: dict[str, int],
+        ) -> int:
+            row_h = 26
+            y = params_y
+            specs = param_specs.get(choice, [])
+            if not specs:
+                label = param_font.render("No parameters", True, LBL_COLOR)
+                screen.blit(label, (x, y))
+                return y + row_h
+            for idx, spec in enumerate(specs):
+                name = spec["name"]
+                label = spec["label"]
+                if spec["type"] == "int":
+                    text = (
+                        f"{label}: {p[name]}  "
+                        f"({pygame.key.name(keys['dec'])}/{pygame.key.name(keys['inc'])})"
+                    )
+                    line = param_font.render(text, True, LBL_COLOR)
+                    screen.blit(line, (x, y))
+                    y += row_h
+                    continue
+                else:
+                    toggle_key = keys["toggle1"] if idx == 1 else keys["toggle2"]
+                    text = (
+                        f"{label}: {'on' if p[name] else 'off'}  "
+                        f"({pygame.key.name(toggle_key)})"
+                    )
+                    line = param_font.render(text, True, LBL_COLOR)
+                    screen.blit(line, (x, y))
+                    y += row_h
+            return y
+
+        left_params = params[0][left_choice]
+        right_params = params[1][right_choice]
+        y_after_left = _render_params(left_x, left_choice, left_params, keymap[0])
+        y_after_right = _render_params(right_x, right_choice, right_params, keymap[1])
+
+        note_y = max(y_after_left, y_after_right) + 10
+        note = "* affects compute time"
+        note_text = tiny_font.render(note, True, LBL_COLOR)
+        screen.blit(
+            note_text,
+            (SCREEN_SIZE // 2 - note_text.get_width() // 2, note_y),
+        )
+
+        # start button
+        pygame.draw.rect(screen, LINE_COLOR, start_rect, border_radius=12)
+        inner = start_rect.inflate(-6, -6)
+        pygame.draw.rect(screen, BOARD_BG, inner, border_radius=10)
+        start_text = FONT_BOLD.render("Start Game", True, BORDER)
+        screen.blit(
+            start_text,
+            (
+                start_rect.centerx - start_text.get_width() // 2,
+                start_rect.centery - start_text.get_height() // 2,
+            ),
+        )
+
+        pygame.display.flip()
+        clock.tick(60)
+
+
+def game_loop(p1_choice: str, p1_params: dict, p2_choice: str, p2_params: dict) -> bool:
     board = get_board()
 
-    p1 = MinimaxPlayer(Piece.X)
-    p2 = MonteCarloPlayer(piece=Piece.O, iter_nr=1000, use_heuristics=True)
+    p1 = _make_player(p1_choice, Piece.X, p1_params)
+    p2 = _make_player(p2_choice, Piece.O, p2_params)
 
     current = p1 if time.time() % 2 < 1 else p2
     last_invalid_until = 0.0
@@ -409,7 +693,11 @@ def main() -> None:
 
     play_again = True
     while play_again:
-        play_again = game_loop()
+        choices = menu()
+        if choices is None:
+            break
+        (p1_choice, p1_params), (p2_choice, p2_params) = choices
+        play_again = game_loop(p1_choice, p1_params, p2_choice, p2_params)
 
     pygame.quit()
 
