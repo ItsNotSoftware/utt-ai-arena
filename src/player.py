@@ -1,10 +1,11 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from time import perf_counter
 from typing import Tuple
 from dataclasses import dataclass, field
 import math
 import random
+import pickle
+import os
 
 from board import (
     Board,
@@ -146,19 +147,17 @@ class Player(ABC):
         return f"{'X' if self.piece == Piece.X else 'O'} – {self.name}"
 
     def get_move(self, board: Board) -> Move | None:
-        start = perf_counter()
-        move = self._select_move(board)
-        if self.name != "HumanPlayer":
-            duration = perf_counter() - start
-            self._move_count += 1
-            self._move_time_total += duration
-            avg = self._move_time_total / self._move_count
+        return self._select_move(board)
 
-            print(
-                f"{self.get_name()} move time: {duration:.3f}s "
-                f"(avg {avg:.3f}s over {self._move_count} move{'s' if self._move_count != 1 else ''})"
-            )
-        return move
+    def record_move_time(self, duration: float) -> None:
+        """Record a move duration and print timing stats (called from main process)."""
+        self._move_count += 1
+        self._move_time_total += duration
+        avg = self._move_time_total / self._move_count
+        print(
+            f"{self.get_name()} move time: {duration:.3f}s "
+            f"(avg {avg:.3f}s over {self._move_count} move{'s' if self._move_count != 1 else ''})"
+        )
 
     @abstractmethod
     def _select_move(self, board: Board) -> Move | None: ...
@@ -577,3 +576,122 @@ class MonteCarloPlayer(Player):
                 best_visits = child.n_visits
                 best_move = m
         return best_move if best_move is not None else random.choice(moves)
+
+
+class QLearningPlayer(Player):
+    """Tabular Q-Learning with Monte Carlo end-of-episode updates.
+
+    State is encoded as a single integer (board cells in base-3, normalized
+    so the current player's pieces are always +1). This lets one Q-table
+    serve both sides during self-play training.
+    """
+
+    def __init__(
+        self,
+        piece: Piece,
+        q_table: dict[int, float] | None = None,
+        alpha: float = 0.3,
+        gamma: float = 0.9,
+        epsilon: float = 0.1,
+        training: bool = False,
+    ) -> None:
+        super().__init__(piece)
+        self.name = "Q-Learning"
+        self.q_table: dict[int, float] = q_table if q_table is not None else {}
+        self.alpha = alpha
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.training = training
+        self._history: list[int] = []  # sa-keys for current episode
+
+    # ---- compact encoding --------------------------------------------------
+
+    def _state_key(self, board: Board) -> int:
+        """Encode entire board as a single integer.
+
+        Cells are mapped to {0,1,2} (opponent=-1→0, empty=0→1, self=+1→2)
+        and packed in base-3.  Restriction is appended as a base-10 digit.
+        """
+        sign = self.piece.value  # +1 for X, -1 for O
+        val = 0
+        for R in range(3):
+            for C in range(3):
+                inner = board[R][C]
+                for r in range(3):
+                    for c in range(3):
+                        val = val * 3 + (inner[r][c].value * sign + 1)
+        restr = 0 if board.restriction is None else board.restriction[0] * 3 + board.restriction[1] + 1
+        return val * 10 + restr
+
+    @staticmethod
+    def _action_key(move: Move) -> int:
+        return move.outer[0] * 27 + move.outer[1] * 9 + move.inner[0] * 3 + move.inner[1]
+
+    @staticmethod
+    def _sa_key(state: int, action: int) -> int:
+        return state * 81 + action
+
+    # ---- episode management ------------------------------------------------
+
+    def reset_episode(self) -> None:
+        self._history.clear()
+
+    def end_episode(self, reward: float, max_entries: int = 0) -> None:
+        """Backprop discounted return through this episode's history.
+
+        max_entries: if > 0, new state-action pairs are only added while the
+        table is below that size. Existing entries are always updated.
+        """
+        g = reward
+        alpha = self.alpha
+        q = self.q_table
+        at_cap = max_entries > 0 and len(q) >= max_entries
+        for sa in reversed(self._history):
+            if sa in q:
+                q[sa] = q[sa] + alpha * (g - q[sa])
+            elif not at_cap:
+                q[sa] = alpha * g  # 0 + alpha * (g - 0)
+                at_cap = max_entries > 0 and len(q) >= max_entries
+            g *= self.gamma
+        self._history.clear()
+
+    # ---- move selection ----------------------------------------------------
+
+    def _select_move(self, board: Board) -> Move | None:
+        moves = board.legal_moves(self.piece)
+        if not moves:
+            return None
+
+        state = self._state_key(board)
+        q = self.q_table
+
+        if self.training and random.random() < self.epsilon:
+            move = random.choice(moves)
+        else:
+            best_q = -math.inf
+            best_moves: list[Move] = []
+            for m in moves:
+                v = q.get(self._sa_key(state, self._action_key(m)), 0.0)
+                if v > best_q:
+                    best_q = v
+                    best_moves = [m]
+                elif v == best_q:
+                    best_moves.append(m)
+            move = random.choice(best_moves)
+
+        if self.training:
+            self._history.append(self._sa_key(state, self._action_key(move)))
+
+        return move
+
+    # ---- persistence -------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        with open(path, "wb") as f:
+            pickle.dump(self.q_table, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @classmethod
+    def load(cls, path: str, piece: Piece, **kwargs) -> "QLearningPlayer":
+        with open(path, "rb") as f:
+            q_table = pickle.load(f)
+        return cls(piece=piece, q_table=q_table, **kwargs)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 import time
 import multiprocessing
 import queue
@@ -7,7 +8,7 @@ from typing import Tuple
 import pygame
 
 from board import Board, BoardState, Piece, board_state_to_piece, get_board, Move
-from player import HumanPlayer, MinimaxPlayer, Player, set_layout, MonteCarloPlayer
+from player import HumanPlayer, MinimaxPlayer, Player, set_layout, MonteCarloPlayer, QLearningPlayer
 
 # --- constants ---
 SCREEN_SIZE = 1280
@@ -44,13 +45,26 @@ MC_DEFAULT_HEURISTICS = False
 MINIMAX_DEFAULT_DEPTH = 6
 MINIMAX_DEFAULT_HEURISTICS = True
 MINIMAX_DEFAULT_PRUNING = True
+MODELS_DIR = "models/qlearning"
+
+
+def _list_models() -> list[str]:
+    """Return sorted model names (without .pkl) from MODELS_DIR."""
+    if not os.path.isdir(MODELS_DIR):
+        return []
+    return sorted(f[:-4] for f in os.listdir(MODELS_DIR) if f.endswith(".pkl"))
 
 
 def _compute_ai_move(
     player: Player, board_snapshot: Board, out_q: "queue.Queue"
 ) -> None:
     """Worker process: compute AI move on a snapshot and return it via queue."""
-    out_q.put(player.get_move(board_snapshot))
+    from time import perf_counter
+
+    start = perf_counter()
+    move = player.get_move(board_snapshot)
+    elapsed = perf_counter() - start
+    out_q.put((move, elapsed))
 
 
 # --- setup ---
@@ -338,6 +352,13 @@ def _make_player(choice: str, piece: Piece, params: dict | None = None) -> Playe
             iter_nr=int(params.get("iters", MC_DEFAULT_ITERS)),
             use_heuristics=MC_DEFAULT_HEURISTICS,
         )
+    if choice == "qlearning":
+        model_name = params.get("model")
+        if model_name:
+            path = os.path.join(MODELS_DIR, f"{model_name}.pkl")
+            if os.path.exists(path):
+                return QLearningPlayer.load(path, piece=piece, epsilon=0.0)
+        return QLearningPlayer(piece=piece, epsilon=0.0)
     raise ValueError(f"Unknown player choice: {choice}")
 
 
@@ -363,6 +384,7 @@ def _draw_menu_option(
 
 
 def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
+    models = _list_models()
     options = [
         {"label": "Human", "key": "human", "params": {}},
         {
@@ -378,6 +400,11 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
             "label": "MonteCarlo",
             "key": "mcts",
             "params": {"iters": MC_DEFAULT_ITERS},
+        },
+        {
+            "label": "Q-Learning",
+            "key": "qlearning",
+            "params": {"model": models[0] if models else None},
         },
     ]
 
@@ -396,6 +423,11 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
                 "min": 100,
             }
         ],
+        "qlearning": (
+            [{"name": "model", "label": "Model", "type": "cycle", "choices": models}]
+            if models
+            else []
+        ),
     }
 
     keymap = {
@@ -496,6 +528,15 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
                             if event.key == player_keys["inc"]:
                                 step = spec.get("step", 1)
                                 p[spec["name"]] = p[spec["name"]] + step
+                        if spec["type"] == "cycle" and spec_idx == 0:
+                            choices = spec["choices"]
+                            if choices:
+                                cur = p[spec["name"]]
+                                idx = choices.index(cur) if cur in choices else 0
+                                if event.key == player_keys["dec"]:
+                                    p[spec["name"]] = choices[(idx - 1) % len(choices)]
+                                if event.key == player_keys["inc"]:
+                                    p[spec["name"]] = choices[(idx + 1) % len(choices)]
                         if spec["type"] == "bool" and spec_idx == 1:
                             if event.key == player_keys["toggle1"]:
                                 p[spec["name"]] = not p[spec["name"]]
@@ -551,19 +592,23 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict]] | None:
                         f"{label}: {p[name]}  "
                         f"({pygame.key.name(keys['dec'])}/{pygame.key.name(keys['inc'])})"
                     )
-                    line = param_font.render(text, True, LBL_COLOR)
-                    screen.blit(line, (x, y))
-                    y += row_h
-                    continue
+                elif spec["type"] == "cycle":
+                    current = p[name] or "(none)"
+                    choices = spec["choices"]
+                    n = len(choices)
+                    text = (
+                        f"{label}: {current}  ({n} model{'s' if n != 1 else ''})  "
+                        f"({pygame.key.name(keys['dec'])}/{pygame.key.name(keys['inc'])})"
+                    )
                 else:
                     toggle_key = keys["toggle1"] if idx == 1 else keys["toggle2"]
                     text = (
                         f"{label}: {'on' if p[name] else 'off'}  "
                         f"({pygame.key.name(toggle_key)})"
                     )
-                    line = param_font.render(text, True, LBL_COLOR)
-                    screen.blit(line, (x, y))
-                    y += row_h
+                line = param_font.render(text, True, LBL_COLOR)
+                screen.blit(line, (x, y))
+                y += row_h
             return y
 
         left_params = params[0][left_choice]
@@ -642,14 +687,14 @@ def game_loop(p1_choice: str, p1_params: dict, p2_choice: str, p2_params: dict) 
                     )
                     ai_process.start()
                 try:
-                    pending_move = ai_result.get_nowait()
+                    pending_move, elapsed = ai_result.get_nowait()
                     ai_process.join()
                     ai_process = None
+                    current.record_move_time(elapsed)
                 except queue.Empty:
                     if ai_process is not None and not ai_process.is_alive():
                         ai_process.join()
                         ai_process = None
-                    pass
         move = pending_move
         if move:
             token = board.make_move(move)

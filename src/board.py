@@ -56,6 +56,16 @@ def board_state_to_value(state: BoardState) -> int:
 class Board:
     """Class to represent any board, inner boards or the main board (composed of 9 inner boards)."""
 
+    __slots__ = (
+        "board",
+        "board_state",
+        "is_inner",
+        "restriction",
+        "playable_outers_list",
+        "playable_outers_set",
+        "empty_cells",
+    )
+
     def __init__(
         self, piece_factory: Callable[[], Union[Piece, "Board"]] = lambda: Piece.EMPTY
     ) -> None:
@@ -278,23 +288,24 @@ class Board:
 
     def clone(self) -> Board:
         """Deep copy (keeps inner boards, restriction, and playable outers/empties)."""
-        new_board = Board(piece_factory=lambda: Piece.EMPTY)
+        new_board = Board.__new__(Board)
         new_board.board_state = self.board_state
         new_board.is_inner = self.is_inner
         new_board.restriction = self.restriction
 
-        for i in range(3):
-            for j in range(3):
-                cell = self.board[i][j]
-                if isinstance(cell, Board):
-                    new_board.board[i][j] = cell.clone()
-                else:
-                    new_board.board[i][j] = cell
-
         if self.is_inner:
+            # Shallow copy is fine: cells are immutable Piece enums
+            new_board.board = [row[:] for row in self.board]
             new_board.empty_cells = set(self.empty_cells)
+            new_board.playable_outers_list = []
+            new_board.playable_outers_set = set()
         else:
-            new_board._refresh_playable_outers()
+            new_board.board = [
+                [self.board[i][j].clone() for j in range(3)] for i in range(3)
+            ]
+            new_board.playable_outers_list = list(self.playable_outers_list)
+            new_board.playable_outers_set = set(self.playable_outers_set)
+            new_board.empty_cells = set()
         return new_board
 
     def legal_moves(
