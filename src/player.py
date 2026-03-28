@@ -227,8 +227,6 @@ class MinimaxPlayer(Player):
             features.append("heuristic")
         if use_pruning:
             features.append("pruning")
-        if use_cache:
-            features.append("cache")
         if features:
             self.name += " (" + ", ".join(features) + ")"
 
@@ -620,12 +618,18 @@ class QLearningPlayer(Player):
                 for r in range(3):
                     for c in range(3):
                         val = val * 3 + (inner[r][c].value * sign + 1)
-        restr = 0 if board.restriction is None else board.restriction[0] * 3 + board.restriction[1] + 1
+        restr = (
+            0
+            if board.restriction is None
+            else board.restriction[0] * 3 + board.restriction[1] + 1
+        )
         return val * 10 + restr
 
     @staticmethod
     def _action_key(move: Move) -> int:
-        return move.outer[0] * 27 + move.outer[1] * 9 + move.inner[0] * 3 + move.inner[1]
+        return (
+            move.outer[0] * 27 + move.outer[1] * 9 + move.inner[0] * 3 + move.inner[1]
+        )
 
     @staticmethod
     def _sa_key(state: int, action: int) -> int:
