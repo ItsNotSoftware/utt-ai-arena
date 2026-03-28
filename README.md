@@ -14,6 +14,7 @@ Index
 
 - [Run the Game](#run-the-game)
 - [Training Q-Learning](#training-q-learning)
+- [Training DQN](#training-dqn)
 - [Implemented Algorithms](#implemented-algorithms)
 - [Algorithm Details and Params](#algorithm-details-and-params)
 
@@ -55,13 +56,15 @@ uv run scripts/train_qlearning.py train --episodes 1000000
 
 **Resume** training from an existing model:
 ```bash
-uv run scripts/train_qlearning.py train --load q_table.pkl --episodes 1000000
+uv run scripts/train_qlearning.py train --load q_table_1M --episodes 1000000 --name q_table_2M
 ```
 
 **Evaluate** the trained model against a random opponent:
 ```bash
-uv run scripts/train_qlearning.py eval --episodes 1000
+uv run scripts/train_qlearning.py eval --model q_table_1M --episodes 1000
 ```
+
+Models are saved to `models/qlearning/` as `.pkl` files and can be selected in the game menu.
 
 Training options:
 
@@ -74,9 +77,56 @@ Training options:
 | `--epsilon-start` | 1.0 | Initial exploration rate (1.0 = fully random) |
 | `--epsilon-end` | 0.05 | Final exploration rate after decay |
 | `--epsilon-decay` | 80000 | Episodes over which epsilon decays |
-| `--save` | q_table.pkl | Where to save the trained model |
-| `--load` | — | Resume training from an existing model |
-| `--report-interval` | 10000 | Print stats every N episodes per worker |
+| `--name` | auto | Output model name (default: q_table_Nk / q_table_NM) |
+| `--load` | — | Resume training from an existing model name |
+| `--max-entries` | 8000000 | Max Q-table entries per worker (~1 GB/worker) |
+| `--report-interval` | 1000 | Print stats every N episodes per worker |
+
+
+Training DQN
+------------
+
+DQN uses a convolutional neural network trained via self-play with experience
+replay. Requires PyTorch (included in dependencies).
+
+**Train** (single process, GPU if available):
+```bash
+uv run scripts/train_dqn.py train
+```
+
+For stronger play, train longer:
+```bash
+uv run scripts/train_dqn.py train --episodes 200000 --name dqn_250k
+```
+
+**Resume** from an existing model:
+```bash
+uv run scripts/train_dqn.py train --load dqn_250k --episodes 200000 --name dqn_400k
+```
+
+**Evaluate** against a random opponent:
+```bash
+uv run scripts/train_dqn.py eval --model dqn_250k --episodes 1000
+```
+
+Models are saved to `models/dqn/` as `.pt` files and can be selected in the game menu.
+
+Training options:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--episodes` | 50000 | Number of self-play games |
+| `--lr` | 1e-4 | Learning rate |
+| `--gamma` | 0.99 | Discount factor |
+| `--epsilon-start` | 1.0 | Initial exploration rate |
+| `--epsilon-end` | 0.05 | Final exploration rate |
+| `--epsilon-decay` | 40000 | Episodes over which epsilon decays |
+| `--batch-size` | 64 | Mini-batch size for training |
+| `--buffer-size` | 100000 | Replay buffer capacity |
+| `--target-update` | 500 | Sync target network every N episodes |
+| `--eval-interval` | 2000 | Quick eval vs random every N episodes (0=off) |
+| `--load` | — | Resume from model name in models/dqn/ |
+| `--name` | auto | Output model name (default: dqn_Nk / dqn_NM) |
 
 
 Implemented Algorithms
@@ -89,7 +139,7 @@ Work in progress: I plan to add more algorithms in the future.
 - [x] Alpha-Beta Pruning
 - [x] Monte Carlo Tree Search (MCTS)
 - [x] Tabular Q-Learning
-- [ ] Deep Q-Network (DQN)
+- [x] Deep Q-Network (DQN)
 - [ ] Policy Gradient (REINFORCE or PPO)
 - [ ] RL + MCTS
 

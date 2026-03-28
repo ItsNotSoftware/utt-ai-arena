@@ -31,6 +31,7 @@ def _default_name(episodes: int) -> str:
         return f"q_table_{n}k"
     return f"q_table_{episodes}"
 
+
 # ── ANSI helpers ─────────────────────────────────────────────────────────────
 
 _IS_TTY = sys.stdout.isatty()
@@ -240,9 +241,13 @@ def train(
     load_path = os.path.join(MODELS_DIR, f"{load_name}.pkl") if load_name else None
 
     mem_per_worker_mb = max_entries * 120 // 1_000_000 if max_entries else 0
-    cap_str = f"{max_entries:,}  {dim(f'(~{mem_per_worker_mb * workers:,} MB total)')}" if max_entries else "unlimited"
+    cap_str = (
+        f"{max_entries:,}  {dim(f'(~{mem_per_worker_mb * workers:,} MB total)')}"
+        if max_entries
+        else "unlimited"
+    )
 
-    print(_box("Q-Learning Training  —  Ultimate Tic-Tac-Toe"))
+    print(_box("Q-Learning Training  —  Ultimate Tic-Tac-Toe "))
     print()
     print(f"  {bold('Episodes')}   : {episodes:,}")
     print(f"  {bold('Workers')}    : {workers}")
@@ -318,7 +323,11 @@ def evaluate(model_name: str, episodes: int) -> None:
     model_path = os.path.join(MODELS_DIR, f"{model_name}.pkl")
     if not os.path.exists(model_path):
         print(red(f"  No model found at {model_path}"))
-        available = [f[:-4] for f in os.listdir(MODELS_DIR) if f.endswith(".pkl")] if os.path.isdir(MODELS_DIR) else []
+        available = (
+            [f[:-4] for f in os.listdir(MODELS_DIR) if f.endswith(".pkl")]
+            if os.path.isdir(MODELS_DIR)
+            else []
+        )
         if available:
             print(f"  Available: {', '.join(sorted(available))}")
         return
@@ -398,7 +407,12 @@ def main() -> None:
 
     tp = sub.add_parser("train", help="Train via self-play")
     tp.add_argument("--episodes", type=int, default=100_000)
-    tp.add_argument("--name", type=str, default=None, help="Model name (default: auto from episode count)")
+    tp.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Model name (default: auto from episode count)",
+    )
     tp.add_argument(
         "--workers",
         type=int,
@@ -410,13 +424,25 @@ def main() -> None:
     tp.add_argument("--epsilon-start", type=float, default=1.0)
     tp.add_argument("--epsilon-end", type=float, default=0.05)
     tp.add_argument("--epsilon-decay", type=int, default=80_000)
-    tp.add_argument("--load", type=str, default=None, help="Resume from model name in models/qlearning/")
+    tp.add_argument(
+        "--load",
+        type=str,
+        default=None,
+        help="Resume from model name in models/qlearning/",
+    )
     tp.add_argument("--report-interval", type=int, default=1000)
-    tp.add_argument("--max-entries", type=int, default=8_000_000, help="Max Q-table entries per worker (0=unlimited). Default 8M ≈ 1GB/worker")
+    tp.add_argument(
+        "--max-entries",
+        type=int,
+        default=8_000_000,
+        help="Max Q-table entries per worker (0=unlimited). Default 8M ≈ 1GB/worker",
+    )
 
     ep = sub.add_parser("eval", help="Evaluate trained model vs random")
     ep.add_argument("--episodes", type=int, default=1_000)
-    ep.add_argument("--model", type=str, required=True, help="Model name in models/qlearning/")
+    ep.add_argument(
+        "--model", type=str, required=True, help="Model name in models/qlearning/"
+    )
 
     args = parser.parse_args()
 

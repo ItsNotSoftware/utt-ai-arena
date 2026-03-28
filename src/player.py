@@ -695,3 +695,79 @@ class QLearningPlayer(Player):
         with open(path, "rb") as f:
             q_table = pickle.load(f)
         return cls(piece=piece, q_table=q_table, **kwargs)
+
+
+class DQNPlayer(Player):
+    """Deep Q-Network player.
+
+    Uses a CNN that takes a (7, 9, 9) board encoding and outputs Q-values
+    for all 81 actions. Illegal actions are masked before argmax.
+
+    The model is lazily loaded to keep torch out of the module-level imports,
+    and to survive pickling across multiprocessing boundaries.
+    """
+
+    def __init__(
+        self,
+        piece: Piece,
+        state_dict: dict | None = None,
+        epsilon: float = 0.0,
+        training: bool = False,
+    ) -> None:
+        super().__init__(piece)
+        self.name = "DQN"
+        self._state_dict = state_dict
+        self._model = None  # built lazily
+        self.epsilon = epsilon
+        self.training = training
+
+    # ---- lazy model ----------------------------------------------------------
+
+    def _ensure_model(self):
+        if self._model is not None:
+            return
+        from dqn_model import DQNNet
+        import torch
+
+        self._model = DQNNet()
+        if self._state_dict:
+            self._model.load_state_dict(self._state_dict)
+        self._model.eval()
+
+    # ---- move selection ------------------------------------------------------
+
+    def _select_move(self, board: Board) -> Move | None:
+        from dqn_model import encode_board, legal_mask, action_to_move
+        import torch
+
+        moves = board.legal_moves(self.piece)
+        if not moves:
+            return None
+
+        if self.training and random.random() < self.epsilon:
+            return random.choice(moves)
+
+        self._ensure_model()
+        state = encode_board(board, self.piece)
+        mask = legal_mask(board, self.piece)
+
+        with torch.no_grad():
+            q_values = self._model(state.unsqueeze(0)).squeeze(0)
+        q_values = q_values + mask
+        action = q_values.argmax().item()
+        return action_to_move(action, self.piece)
+
+    # ---- persistence ---------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        import torch
+
+        self._ensure_model()
+        torch.save(self._model.state_dict(), path)
+
+    @classmethod
+    def load(cls, path: str, piece: Piece, **kwargs) -> "DQNPlayer":
+        import torch
+
+        state_dict = torch.load(path, map_location="cpu", weights_only=True)
+        return cls(piece=piece, state_dict=state_dict, **kwargs)
