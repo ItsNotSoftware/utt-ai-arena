@@ -15,6 +15,7 @@ Index
 - [Run the Game](#run-the-game)
 - [Training Q-Learning](#training-q-learning)
 - [Training DQN](#training-dqn)
+- [Training AlphaZero](#training-alphazero)
 - [Implemented Algorithms](#implemented-algorithms)
 - [Algorithm Details and Params](#algorithm-details-and-params)
 
@@ -129,6 +130,61 @@ Training options:
 | `--name` | auto | Output model name (default: dqn_Nk / dqn_NM) |
 
 
+Training AlphaZero
+------------------
+
+AlphaZero combines MCTS with a policy+value neural network trained from
+self-play. The network's policy head guides MCTS via PUCT (no random
+rollouts), and its value head replaces playout outcomes. Each move stores
+the visit-count distribution `π`; at game end the result `z ∈ {-1, 0, +1}`
+is propagated to every position from each player's perspective. The network
+is trained to match `(π, z)` with cross-entropy + MSE loss.
+
+**Train**:
+```bash
+uv run training_scripts/train_alphazero.py train
+```
+
+For stronger play, increase iterations / games / simulations:
+```bash
+uv run training_scripts/train_alphazero.py train \
+    --iterations 200 --games-per-iter 100 --simulations 200 --name az_strong
+```
+
+**Resume** from an existing model:
+```bash
+uv run training_scripts/train_alphazero.py train --load az_50it --name az_100it
+```
+
+**Evaluate** vs random:
+```bash
+uv run training_scripts/train_alphazero.py eval --model az_50it --episodes 50
+```
+
+Models are saved to `models/alphazero/` as `.pt` files and can be selected
+in the game menu (with a tunable simulation count per move).
+
+Training options:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--iterations` | 100 | Outer loop iterations (self-play → train) |
+| `--games-per-iter` | 100 | Self-play games generated each iteration |
+| `--simulations` | 200 | MCTS simulations per move during self-play |
+| `--train-steps` | 400 | Gradient steps per iteration |
+| `--batch-size` | 256 | Mini-batch size |
+| `--buffer-size` | 200000 | Replay buffer capacity (positions) |
+| `--lr` | 1e-3 | Learning rate (Adam, weight_decay 1e-4) |
+| `--dirichlet-eps` | 0.25 | Root Dirichlet noise weight (exploration) |
+| `--temperature-moves` | 15 | Plies played with τ=1 before going greedy |
+| `--workers` | auto | Parallel self-play workers for normal-sized runs (0 = single process; CUDA auto caps at 4, CPU auto caps at 8) |
+| `--eval-interval` | 5 | Quick eval vs random every N iterations (0 = off) |
+| `--eval-games` | 20 | Games per quick eval |
+| `--eval-sims` | 50 | MCTS sims per move during quick eval |
+| `--load` | — | Resume from model name in `models/alphazero/` (prefers `.ckpt.pt` for full state) |
+| `--name` | auto | Output model name (default: `az_<iterations>it`) |
+
+
 Implemented Algorithms
 ----------------------
 
@@ -140,8 +196,8 @@ Work in progress: I plan to add more algorithms in the future.
 - [x] Monte Carlo Tree Search (MCTS)
 - [x] Tabular Q-Learning
 - [x] Deep Q-Network (DQN)
+- [x] AlphaZero (MCTS + policy/value network)
 - [ ] Policy Gradient (REINFORCE or PPO)
-- [ ] RL + MCTS
 
 
 Algorithm Details and Params
@@ -164,3 +220,19 @@ Algorithm Details and Params
 
 - **Q-Learning**: trained offline via self-play. Loads `q_table.pkl` from the project root.
   If no model file is found, plays randomly. See [Training Q-Learning](#training-q-learning).
+
+- **DQN**: convolutional Q-network trained via self-play with experience replay.
+  See [Training DQN](#training-dqn).
+
+  | Param | Meaning |
+  | --- | --- |
+  | Model | Trained checkpoint to load. |
+
+- **AlphaZero**: PUCT-MCTS guided by a policy + value ResNet, trained from
+  self-play (cross-entropy on visit counts, MSE on game outcome).
+  See [Training AlphaZero](#training-alphazero).
+
+  | Param | Meaning |
+  | --- | --- |
+  | Model | Trained checkpoint to load. |
+  | Simulations | MCTS simulations per move (higher = stronger, slower). |
