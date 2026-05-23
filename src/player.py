@@ -12,6 +12,7 @@ from board import (
     BoardState,
     Move,
     Piece,
+    WIN_LINES,
     board_state_to_piece,
     swap_piece,
 )
@@ -33,39 +34,42 @@ heuristics = {
     "center_corner": 3,
 }
 
+IMPORTANT_POSITIONS = frozenset(((0, 0), (0, 2), (1, 1), (2, 0), (2, 2)))
+
+
+def _is_empty_board(board: Board) -> bool:
+    """True if no piece has been placed yet. The opening position is
+    symmetric, so deterministic players would otherwise always pick the same
+    cell and produce identical games on every launch."""
+    if board.restriction is not None:
+        return False
+    for r in range(3):
+        for c in range(3):
+            inner = board[r][c]
+            if (
+                inner.board_state != BoardState.NOT_FINISHED
+                or len(inner.empty_cells) != 9
+            ):
+                return False
+    return True
+TT_EXACT = 0
+TT_LOWER = 1
+TT_UPPER = 2
+
+
+def _two_in_row_score(a: Piece, b: Piece, c: Piece, amount: int) -> float:
+    line_sum = a.value + b.value + c.value
+    if line_sum == 2 and (a == Piece.EMPTY or b == Piece.EMPTY or c == Piece.EMPTY):
+        return float(amount)
+    if line_sum == -2 and (a == Piece.EMPTY or b == Piece.EMPTY or c == Piece.EMPTY):
+        return float(-amount)
+    return 0.0
+
 
 def evaluate_board(board: Board) -> float:
     "Heuristic eval"
-    boards = [board[i][j] for i in range(3) for j in range(3)]
     heur = heuristics
     score = 0.0
-
-    # Score utilities
-    def inner_line_score(values: list[Piece]) -> float:
-        """Two-in-a-row patterns inside an inner board."""
-        x_count = values.count(Piece.X)
-        o_count = values.count(Piece.O)
-        empty_count = values.count(Piece.EMPTY)
-
-        if x_count == 2 and o_count == 0 and empty_count == 1:
-            return heur["two_in_row_inner"]
-        if o_count == 2 and x_count == 0 and empty_count == 1:
-            return -heur["two_in_row_inner"]
-        return 0.0
-
-    def outer_line_score(values: list[Piece]) -> float:
-        """Two-in-a-row patterns across inner board results."""
-        x_count = values.count(Piece.X)
-        o_count = values.count(Piece.O)
-        empty_count = values.count(Piece.EMPTY)
-
-        if x_count == 2 and o_count == 0 and empty_count == 1:
-            return heur["two_in_row_outer"]
-        if o_count == 2 and x_count == 0 and empty_count == 1:
-            return -heur["two_in_row_outer"]
-        return 0.0
-
-    important_positions = {(0, 0), (0, 2), (1, 1), (2, 0), (2, 2)}
 
     # Outer board heuristic: based on inner board outcomes
     outer_values = [
@@ -73,54 +77,50 @@ def evaluate_board(board: Board) -> float:
         for r in range(3)
     ]
 
-    for r in range(3):
-        score += outer_line_score([outer_values[r][c] for c in range(3)])
-        score += outer_line_score([outer_values[c][r] for c in range(3)])
-    score += outer_line_score([outer_values[i][i] for i in range(3)])
-    score += outer_line_score([outer_values[2 - i][i] for i in range(3)])
-
-    # Reward controlling critical inner boards (outer center/corners)
-    for r in range(3):
-        for c in range(3):
-            inner_board = board[r][c]
-            value = board_state_to_piece(inner_board.board_state)
-            if (r, c) in important_positions:
-                if value == Piece.X:
-                    score += heur["center_corner"]
-                elif value == Piece.O:
-                    score -= heur["center_corner"]
+    for a, b, c in WIN_LINES:
+        score += _two_in_row_score(
+            outer_values[a[0]][a[1]],
+            outer_values[b[0]][b[1]],
+            outer_values[c[0]][c[1]],
+            heur["two_in_row_outer"],
+        )
 
     # Evaluate each inner board
-    for inner in boards:
-        if inner.board_state == BoardState.X_WON:
-            score += heur["inner_win"]
-        elif inner.board_state == BoardState.O_WON:
-            score -= heur["inner_win"]
+    for R in range(3):
+        for C in range(3):
+            inner = board[R][C]
+            st = inner.board_state
 
-        # Reward center/corner occupancy inside inner boards
-        for r in range(3):
-            for c in range(3):
-                piece = inner[r][c]
-                if piece == Piece.EMPTY:
-                    continue
-                if (r, c) in important_positions:
-                    if piece == Piece.X:
-                        score += heur["center_corner"]
-                    elif piece == Piece.O:
-                        score -= heur["center_corner"]
+            if st == BoardState.X_WON:
+                score += heur["inner_win"]
+                if (R, C) in IMPORTANT_POSITIONS:
+                    score += heur["center_corner"]
+            elif st == BoardState.O_WON:
+                score -= heur["inner_win"]
+                if (R, C) in IMPORTANT_POSITIONS:
+                    score -= heur["center_corner"]
 
-        if inner.board_state != BoardState.NOT_FINISHED:
-            continue
+            cells = inner.board
 
-        # Two-in-a-row patterns inside an unfinished inner board
-        for r in range(3):
-            row_values = [inner[r][c] for c in range(3)]
-            col_values = [inner[c][r] for c in range(3)]
-            score += inner_line_score(row_values)
-            score += inner_line_score(col_values)
+            # Reward center/corner occupancy inside inner boards
+            for r, c in IMPORTANT_POSITIONS:
+                piece = cells[r][c]
+                if piece == Piece.X:
+                    score += heur["center_corner"]
+                elif piece == Piece.O:
+                    score -= heur["center_corner"]
 
-        score += inner_line_score([inner[i][i] for i in range(3)])
-        score += inner_line_score([inner[2 - i][i] for i in range(3)])
+            if st != BoardState.NOT_FINISHED:
+                continue
+
+            # Two-in-a-row patterns inside an unfinished inner board
+            for a, b, c in WIN_LINES:
+                score += _two_in_row_score(
+                    cells[a[0]][a[1]],
+                    cells[b[0]][b[1]],
+                    cells[c[0]][c[1]],
+                    heur["two_in_row_inner"],
+                )
 
     return score
 
@@ -233,8 +233,17 @@ class MinimaxPlayer(Player):
         self.use_heuristic_eval = use_heuristic_eval
         self.use_pruning = use_pruning
         self.use_cache = use_cache
-        self._tt: dict[tuple, float] = {}
+        self._tt: dict[tuple[int, int], tuple[float, int]] = {}
         self._tt_max = max_cache
+
+    def _store_tt(
+        self, tt_key: tuple[int, int] | None, value: float, flag: int = TT_EXACT
+    ) -> None:
+        if not self.use_cache or tt_key is None:
+            return
+        if len(self._tt) >= self._tt_max:
+            self._tt.clear()
+        self._tt[tt_key] = (value, flag)
 
     def _minimax(
         self,
@@ -247,60 +256,72 @@ class MinimaxPlayer(Player):
     ) -> float:
         self._nodes_visited += 1
         tt_key = None
+        alpha_orig = alpha
+        beta_orig = beta
         if self.use_cache:
             depth_remaining = depth_limit - depth
-            tt_key = (board.key(piece), depth_remaining)
-            if tt_key in self._tt:
-                return self._tt[tt_key]
+            tt_key = (board.packed_key(piece), depth_remaining)
+            entry = self._tt.get(tt_key)
+            if entry is not None:
+                value, flag = entry
+                if flag == TT_EXACT:
+                    return value
+                if self.use_pruning and alpha is not None and beta is not None:
+                    if flag == TT_LOWER:
+                        alpha = max(alpha, value)
+                    elif flag == TT_UPPER:
+                        beta = min(beta, value)
+                    if alpha >= beta:
+                        return value
 
         # Terminal?
         match board.board_state:
             case BoardState.DRAW:
                 value = heuristics["draw"]
-                if self.use_cache and tt_key is not None:
-                    if len(self._tt) >= self._tt_max:
-                        self._tt.clear()
-                    self._tt[tt_key] = value
+                self._store_tt(tt_key, value)
                 return value
             case BoardState.X_WON:
                 value = heuristics["win"]
-                if self.use_cache and tt_key is not None:
-                    if len(self._tt) >= self._tt_max:
-                        self._tt.clear()
-                    self._tt[tt_key] = value
+                self._store_tt(tt_key, value)
                 return value
             case BoardState.O_WON:
                 value = -heuristics["win"]
-                if self.use_cache and tt_key is not None:
-                    if len(self._tt) >= self._tt_max:
-                        self._tt.clear()
-                    self._tt[tt_key] = value
+                self._store_tt(tt_key, value)
                 return value
 
         # Depth limit
         if depth >= depth_limit:
             value = evaluate_board(board) if self.use_heuristic_eval else 0.0
-            if self.use_cache and tt_key is not None:
-                if len(self._tt) >= self._tt_max:
-                    self._tt.clear()
-                self._tt[tt_key] = value
+            self._store_tt(tt_key, value)
             return value
 
         # Children
         moves = board.legal_moves(piece)
         if not moves:
             return 0.0
+        if self.use_pruning and len(moves) > 1:
+            moves = self._order_moves_quick(board, moves, piece)
 
         maximizing = piece == Piece.X
         best = -math.inf if maximizing else math.inf
+        next_piece = swap_piece(piece)
+        cutoff = False
 
         for m in moves:
             token = board.make_move(m)
             if token is None:
                 continue  # should not happen with legal_moves
-            score = self._minimax(
-                swap_piece(piece), board, depth + 1, depth_limit, alpha, beta
-            )
+            match board.board_state:
+                case BoardState.DRAW:
+                    score = heuristics["draw"]
+                case BoardState.X_WON:
+                    score = heuristics["win"]
+                case BoardState.O_WON:
+                    score = -heuristics["win"]
+                case _:
+                    score = self._minimax(
+                        next_piece, board, depth + 1, depth_limit, alpha, beta
+                    )
             board.undo_move(token)
 
             if maximizing:
@@ -309,6 +330,7 @@ class MinimaxPlayer(Player):
                     if self.use_pruning and alpha is not None and beta is not None:
                         alpha = max(alpha, best)
                         if alpha >= beta:
+                            cutoff = True
                             break
             else:
                 if score < best:
@@ -316,13 +338,68 @@ class MinimaxPlayer(Player):
                     if self.use_pruning and alpha is not None and beta is not None:
                         beta = min(beta, best)
                         if beta <= alpha:
+                            cutoff = True
                             break
 
-        if self.use_cache and tt_key is not None:
-            if len(self._tt) >= self._tt_max:
-                self._tt.clear()
-            self._tt[tt_key] = best
+        flag = TT_EXACT
+        if cutoff and alpha_orig is not None and beta_orig is not None:
+            flag = TT_LOWER if maximizing else TT_UPPER
+        self._store_tt(tt_key, best, flag)
         return best
+
+    def _move_priority(self, board: Board, move: Move, piece: Piece) -> int:
+        score = 0
+        inner = board[move.outer[0]][move.outer[1]]
+        cells = inner.board
+        opponent = swap_piece(piece)
+        wins_inner = False
+
+        for a, b, c in WIN_LINES:
+            if move.inner != a and move.inner != b and move.inner != c:
+                continue
+            line = (cells[a[0]][a[1]], cells[b[0]][b[1]], cells[c[0]][c[1]])
+            own_count = line.count(piece)
+            opp_count = line.count(opponent)
+            empty_count = line.count(Piece.EMPTY)
+            if own_count == 2 and empty_count == 1:
+                score += 1_000
+                wins_inner = True
+            elif opp_count == 2 and empty_count == 1:
+                score += 500
+            elif own_count == 1 and opp_count == 0 and empty_count == 2:
+                score += 20
+
+        if move.inner == (1, 1):
+            score += 30
+        elif move.inner in IMPORTANT_POSITIONS:
+            score += 15
+
+        if wins_inner:
+            own_state = BoardState.X_WON if piece == Piece.X else BoardState.O_WON
+            opp_state = BoardState.O_WON if piece == Piece.X else BoardState.X_WON
+            for a, b, c in WIN_LINES:
+                if move.outer != a and move.outer != b and move.outer != c:
+                    continue
+                states = []
+                for r, col in (a, b, c):
+                    states.append(
+                        own_state
+                        if (r, col) == move.outer
+                        else board[r][col].board_state
+                    )
+                own_count = states.count(own_state)
+                opp_count = states.count(opp_state)
+                if own_count == 3:
+                    score += 100_000
+                elif own_count == 2 and opp_count == 0:
+                    score += 3_000
+        return score
+
+    def _order_moves_quick(
+        self, board: Board, moves: list[Move], piece: Piece
+    ) -> list[Move]:
+        moves.sort(key=lambda m: self._move_priority(board, m, piece), reverse=True)
+        return moves
 
     def _order_moves(self, board: Board, moves: list[Move], piece: Piece) -> list[Move]:
         if not self.use_heuristic_eval or len(moves) < 2:
@@ -348,21 +425,8 @@ class MinimaxPlayer(Player):
         if not moves:
             return None
 
-        if self.piece == Piece.X and board.restriction is None:
-            is_first_move = True
-            for r in range(3):
-                for c in range(3):
-                    inner = board[r][c]
-                    if (
-                        inner.board_state != BoardState.NOT_FINISHED
-                        or len(inner.empty_cells) != 9
-                    ):
-                        is_first_move = False
-                        break
-                if not is_first_move:
-                    break
-            if is_first_move:
-                return random.choice(moves)
+        if _is_empty_board(board):
+            return random.choice(moves)
 
         if self.use_cache:
             self._tt.clear()
@@ -422,7 +486,7 @@ class MinimaxPlayer(Player):
         return best_move
 
 
-@dataclass
+@dataclass(slots=True)
 class McNode:
     board: Board
     parent: McNode | None
@@ -441,7 +505,7 @@ class MonteCarloPlayer(Player):
         super().__init__(piece)
         self.name = "MonteCarlo Tree Search"
         self.iter_nr = iter_nr
-        self.root = None
+        self.root: McNode | None = None
         self.use_heuristics = use_heuristics
 
     @staticmethod
@@ -475,9 +539,18 @@ class MonteCarloPlayer(Player):
                 return current
             max_ucb = -math.inf
             best_children = []
+            log_parent = math.log(max(1, current.n_visits))
+            exploration_scale = math.sqrt(2)
 
-            for m, child in current.children.items():
-                ucb = self._ucb(current, child)
+            for child in current.children.values():
+                if child.n_visits == 0:
+                    ucb = math.inf
+                else:
+                    exploitation = child.total_value / child.n_visits
+                    exploration = exploration_scale * math.sqrt(
+                        log_parent / child.n_visits
+                    )
+                    ucb = exploitation + exploration
 
                 if ucb > max_ucb:
                     max_ucb = ucb
@@ -502,51 +575,60 @@ class MonteCarloPlayer(Player):
 
     def _simulate(self, node: McNode) -> int:
         base = 1 if self.piece == Piece.X else -1
-        sim_board = node.board.clone()
+        sim_board = node.board
+        undo_tokens = []
         turn = node.turn
 
-        while True:
-            match sim_board.board_state:
-                case BoardState.DRAW:
+        try:
+            while True:
+                match sim_board.board_state:
+                    case BoardState.DRAW:
+                        return 0
+                    case BoardState.X_WON:
+                        return base
+                    case BoardState.O_WON:
+                        return -base
+
+                if self.use_heuristics:
+                    moves = sim_board.legal_moves(turn)
+                    if not moves:
+                        return 0
+                    best_score = -math.inf if turn == Piece.X else math.inf
+                    best_moves = []
+                    for m in moves:
+                        token = sim_board.make_move(m)
+                        if token is None:
+                            continue
+                        score = evaluate_board(sim_board)
+                        sim_board.undo_move(token)
+                        if turn == Piece.X:
+                            if score > best_score:
+                                best_score = score
+                                best_moves = [m]
+                            elif score == best_score:
+                                best_moves.append(m)
+                        else:
+                            if score < best_score:
+                                best_score = score
+                                best_moves = [m]
+                            elif score == best_score:
+                                best_moves.append(m)
+                    move = (
+                        random.choice(best_moves) if best_moves else random.choice(moves)
+                    )
+                else:
+                    move = sim_board.random_legal_move(turn)
+                    if move is None:
+                        return 0
+
+                token = sim_board.make_move(move)
+                if token is None:
                     return 0
-                case BoardState.X_WON:
-                    return base
-                case BoardState.O_WON:
-                    return -base
-
-            moves = sim_board.legal_moves(turn)
-            if not moves:
-                return 0
-
-            if self.use_heuristics:
-                best_score = -math.inf if turn == Piece.X else math.inf
-                best_moves = []
-                for m in moves:
-                    token = sim_board.make_move(m)
-                    if token is None:
-                        continue
-                    score = evaluate_board(sim_board)
-                    sim_board.undo_move(token)
-                    if turn == Piece.X:
-                        if score > best_score:
-                            best_score = score
-                            best_moves = [m]
-                        elif score == best_score:
-                            best_moves.append(m)
-                    else:
-                        if score < best_score:
-                            best_score = score
-                            best_moves = [m]
-                        elif score == best_score:
-                            best_moves.append(m)
-                move = random.choice(best_moves) if best_moves else random.choice(moves)
-            else:
-                move = random.choice(moves)
-
-            token = sim_board.make_move(move)
-            if token is None:
-                return 0
-            turn = swap_piece(turn)
+                undo_tokens.append(token)
+                turn = swap_piece(turn)
+        finally:
+            for token in reversed(undo_tokens):
+                sim_board.undo_move(token)
 
     def _backprop(self, node: McNode, value: float) -> None:
         current = node
@@ -555,13 +637,27 @@ class MonteCarloPlayer(Player):
             current.total_value += value
             current = current.parent
 
+    def _root_for_board(self, board: Board) -> McNode:
+        target_key = board.packed_key()
+        if self.root is not None:
+            stack: list[tuple[McNode, int]] = [(self.root, 0)]
+            while stack:
+                node, depth = stack.pop()
+                if node.turn == self.piece and node.board.packed_key() == target_key:
+                    node.parent = None
+                    return node
+                if depth < 2:
+                    for child in node.children.values():
+                        stack.append((child, depth + 1))
+        return self._new_node(board.clone(), None, self.piece)
+
     def _select_move(self, board: Board) -> Move | None:
         moves = board.legal_moves(self.piece)
         if not moves:
             return None
-        self.root = self._new_node(board.clone(), None, self.piece)
+        self.root = self._root_for_board(board)
 
-        for i in range(self.iter_nr):
+        for _ in range(self.iter_nr):
             node = self._select(self.root)
             expanded = self._expand(node)
             score = self._simulate(expanded)
@@ -573,7 +669,15 @@ class MonteCarloPlayer(Player):
             if child.n_visits > best_visits:
                 best_visits = child.n_visits
                 best_move = m
-        return best_move if best_move is not None else random.choice(moves)
+        if best_move is not None:
+            child = self.root.children.get(best_move)
+            self.root = child
+            if self.root is not None:
+                self.root.parent = None
+            return best_move
+
+        self.root = None
+        return random.choice(moves)
 
 
 class QLearningPlayer(Player):
@@ -666,6 +770,9 @@ class QLearningPlayer(Player):
         if not moves:
             return None
 
+        if not self.training and _is_empty_board(board):
+            return random.choice(moves)
+
         state = self._state_key(board)
         q = self.q_table
 
@@ -730,10 +837,14 @@ class DQNPlayer(Player):
     def _ensure_model(self):
         if self._model is not None:
             return
-        from dqn_model import DQNNet
+        from dqn_model import DQNNet, DQNNetLegacy
         import torch
 
-        self._model = DQNNet()
+        # Auto-detect architecture from state dict keys
+        if self._state_dict and "conv.0.weight" in self._state_dict:
+            self._model = DQNNetLegacy()
+        else:
+            self._model = DQNNet()
         if self._state_dict:
             self._model.load_state_dict(self._state_dict)
         self._model.eval()
@@ -747,6 +858,9 @@ class DQNPlayer(Player):
         moves = board.legal_moves(self.piece)
         if not moves:
             return None
+
+        if not self.training and _is_empty_board(board):
+            return random.choice(moves)
 
         if self.training and random.random() < self.epsilon:
             return random.choice(moves)
@@ -774,4 +888,283 @@ class DQNPlayer(Player):
         import torch
 
         state_dict = torch.load(path, map_location="cpu", weights_only=True)
+        # Strip torch.compile prefix if present
+        prefix = "_orig_mod."
+        if any(k.startswith(prefix) for k in state_dict):
+            state_dict = {k.removeprefix(prefix): v for k, v in state_dict.items()}
+        return cls(piece=piece, state_dict=state_dict, **kwargs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AlphaZero
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class AzNode:
+    """Node in the AlphaZero MCTS tree.
+
+    Children are keyed by action index (0..80). Edge stats are kept as
+    parallel arrays for the actions present in `priors`.
+    """
+
+    turn: Piece
+    priors: dict[int, float]  # action -> P(s,a)
+    children: dict[int, "AzNode"] = field(default_factory=dict)
+    N: dict[int, int] = field(default_factory=dict)  # visit counts
+    W: dict[int, float] = field(default_factory=dict)  # cumulative value
+    is_terminal: bool = False
+    terminal_value: float = 0.0  # from current player's perspective
+
+
+class AlphaZeroPlayer(Player):
+    """AlphaZero-style player: PUCT-guided MCTS with policy+value network.
+
+    No random rollouts — leaf evaluation uses the value head. Move is the
+    most-visited child of the root.
+    """
+
+    def __init__(
+        self,
+        piece: Piece,
+        state_dict: dict | None = None,
+        num_simulations: int = 900,
+        c_puct: float = 1.5,
+        temperature: float = 0.0,
+        dirichlet_alpha: float = 0.3,
+        dirichlet_eps: float = 0.0,
+        training: bool = False,
+    ) -> None:
+        super().__init__(piece)
+        self.name = "AlphaZero"
+        self._state_dict = state_dict
+        self._model = None
+        self._device = None
+        self.num_simulations = num_simulations
+        self.c_puct = c_puct
+        self.temperature = temperature
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_eps = dirichlet_eps
+        self.training = training
+        self._last_root_pi: dict[int, float] | None = None
+
+    # ---- lazy model ----------------------------------------------------------
+
+    def _ensure_model(self):
+        if self._model is not None:
+            return
+        from alphazero_model import AlphaZeroNet
+        import torch
+
+        self._device = torch.device("cpu")
+        num_blocks, channels = self._infer_architecture(self._state_dict)
+        self._model = AlphaZeroNet(num_blocks=num_blocks, channels=channels)
+        if self._state_dict:
+            self._model.load_state_dict(self._state_dict)
+        self._model.to(self._device)
+        self._model.eval()
+
+    @staticmethod
+    def _infer_architecture(state_dict: dict | None) -> tuple[int, int]:
+        if not state_dict:
+            return 3, 32
+        channels = state_dict["input_conv.0.weight"].shape[0]
+        num_blocks = 1 + max(
+            (int(k.split(".")[1]) for k in state_dict if k.startswith("res.")),
+            default=-1,
+        )
+        return num_blocks, channels
+
+    # ---- network evaluation --------------------------------------------------
+
+    def _evaluate(self, board: Board, turn: Piece) -> tuple[dict[int, float], float]:
+        """Run network on `board` from `turn`'s perspective.
+
+        Returns (priors over legal actions, value in [-1, 1]).
+        """
+        from alphazero_model import encode_board
+        from dqn_model import move_to_action
+        import torch
+
+        self._ensure_model()
+        moves = board.legal_moves(turn)
+        if not moves:
+            return {}, 0.0
+
+        state = encode_board(board, turn).unsqueeze(0).to(self._device)
+        with torch.no_grad():
+            logits, value = self._model(state)
+        logits = logits.squeeze(0)
+        value = float(value.item())
+
+        legal_actions = [move_to_action(m) for m in moves]
+        legal_logits = logits[legal_actions]
+        probs = torch.softmax(legal_logits, dim=0).tolist()
+        priors = {a: p for a, p in zip(legal_actions, probs)}
+        return priors, value
+
+    # ---- MCTS ----------------------------------------------------------------
+
+    def _terminal_value(self, board: Board, turn: Piece) -> float | None:
+        """If terminal, return value from `turn`'s perspective. Else None."""
+        st = board.board_state
+        if st == BoardState.NOT_FINISHED:
+            return None
+        if st == BoardState.DRAW:
+            return 0.0
+        if (st == BoardState.X_WON and turn == Piece.X) or (
+            st == BoardState.O_WON and turn == Piece.O
+        ):
+            return 1.0
+        return -1.0
+
+    def _puct_select(self, node: AzNode) -> int:
+        """Pick action with max PUCT score."""
+        total_n = sum(node.N.values()) or 1
+        sqrt_total = math.sqrt(total_n)
+        best_a = -1
+        best_score = -math.inf
+        for a, p in node.priors.items():
+            n = node.N.get(a, 0)
+            q = (node.W.get(a, 0.0) / n) if n > 0 else 0.0
+            u = self.c_puct * p * sqrt_total / (1 + n)
+            score = q + u
+            if score > best_score:
+                best_score = score
+                best_a = a
+        return best_a
+
+    def _make_child_node(self, board: Board, turn: Piece) -> tuple[AzNode, float]:
+        term = self._terminal_value(board, turn)
+        if term is not None:
+            return AzNode(turn=turn, priors={}, is_terminal=True, terminal_value=term), term
+        priors, value = self._evaluate(board, turn)
+        return AzNode(turn=turn, priors=priors), value
+
+    def _simulate(self, root: AzNode, root_board: Board) -> None:
+        """One MCTS simulation from root."""
+        from dqn_model import action_to_move
+
+        path: list[tuple[AzNode, int]] = []
+        undo_tokens: list = []
+        board = root_board
+        node = root
+        turn = root.turn
+        leaf_value: float | None = None
+
+        try:
+            # Selection: descend until we hit a leaf (no child for chosen action)
+            while not node.is_terminal:
+                if not node.priors:
+                    break
+                a = self._puct_select(node)
+                path.append((node, a))
+                token = board.make_move(action_to_move(a, turn))
+                if token is None:
+                    break
+                undo_tokens.append(token)
+                turn = swap_piece(turn)
+
+                if a in node.children:
+                    node = node.children[a]
+                else:
+                    child, leaf_value = self._make_child_node(board, turn)
+                    node.children[a] = child
+                    node = child
+                    break
+
+            # Backup: leaf value from leaf's perspective; flip per ply on the way up.
+            if leaf_value is not None:
+                value = leaf_value
+            elif node.is_terminal:
+                value = node.terminal_value
+            else:
+                value = 0.0
+
+            # `value` is from the perspective of `turn` at the leaf.
+            # The action was taken by the parent, whose turn was `swap(turn)`.
+            v = -value
+            for parent, a in reversed(path):
+                parent.N[a] = parent.N.get(a, 0) + 1
+                parent.W[a] = parent.W.get(a, 0.0) + v
+                v = -v
+        finally:
+            for token in reversed(undo_tokens):
+                board.undo_move(token)
+
+    def _select_move(self, board: Board) -> Move | None:
+        from dqn_model import action_to_move, move_to_action
+
+        moves = board.legal_moves(self.piece)
+        if not moves:
+            return None
+
+        if _is_empty_board(board):
+            return random.choice(moves)
+
+        # Build root and add Dirichlet exploration noise (training only)
+        root, _ = self._make_child_node(board, self.piece)
+        if not root.priors:
+            return random.choice(moves)
+
+        if self.training and self.dirichlet_eps > 0:
+            actions = list(root.priors.keys())
+            noise = [random.gammavariate(self.dirichlet_alpha, 1.0) for _ in actions]
+            s = sum(noise) or 1.0
+            noise = [n / s for n in noise]
+            eps = self.dirichlet_eps
+            for a, n in zip(actions, noise):
+                root.priors[a] = (1 - eps) * root.priors[a] + eps * n
+
+        for _ in range(self.num_simulations):
+            self._simulate(root, board)
+
+        # Build visit-count distribution π over legal actions.
+        total_n = sum(root.N.values())
+        if total_n == 0:
+            return random.choice(moves)
+        pi = {a: root.N.get(a, 0) / total_n for a in root.priors}
+        self._last_root_pi = pi
+
+        # Move selection
+        if self.training and self.temperature > 0.1:
+            counts = [root.N.get(a, 0) ** (1.0 / self.temperature) for a in root.priors]
+            tot = sum(counts) or 1.0
+            probs = [c / tot for c in counts]
+            actions = list(root.priors.keys())
+            r = random.random()
+            acc = 0.0
+            chosen = actions[-1]
+            for a, p in zip(actions, probs):
+                acc += p
+                if r <= acc:
+                    chosen = a
+                    break
+        else:
+            chosen = max(root.N.items(), key=lambda kv: kv[1])[0]
+
+        return action_to_move(chosen, self.piece)
+
+    # ---- persistence ---------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        import torch
+
+        self._ensure_model()
+        torch.save(self._model.state_dict(), path)
+
+    @classmethod
+    def load(cls, path: str, piece: Piece, **kwargs) -> "AlphaZeroPlayer":
+        import torch
+
+        state_dict = torch.load(path, map_location="cpu", weights_only=True)
+        if (
+            isinstance(state_dict, dict)
+            and "model" in state_dict
+            and isinstance(state_dict["model"], dict)
+        ):
+            state_dict = state_dict["model"]
+        prefix = "_orig_mod."
+        if any(k.startswith(prefix) for k in state_dict):
+            state_dict = {k.removeprefix(prefix): v for k, v in state_dict.items()}
         return cls(piece=piece, state_dict=state_dict, **kwargs)

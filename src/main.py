@@ -5,10 +5,22 @@ import multiprocessing
 import queue
 from typing import Tuple
 
+if not os.environ.get("SDL_VIDEODRIVER") and os.environ.get("WAYLAND_DISPLAY"):
+    os.environ["SDL_VIDEODRIVER"] = "wayland"
+
 import pygame
 
 from board import Board, BoardState, Piece, board_state_to_piece, get_board, Move
-from player import HumanPlayer, MinimaxPlayer, Player, set_layout, MonteCarloPlayer, QLearningPlayer, DQNPlayer
+from player import (
+    HumanPlayer,
+    MinimaxPlayer,
+    Player,
+    set_layout,
+    MonteCarloPlayer,
+    QLearningPlayer,
+    DQNPlayer,
+    AlphaZeroPlayer,
+)
 
 # --- constants / layout (recalculated on resize) ---
 MIN_SIZE = 800
@@ -31,6 +43,7 @@ def _recalc_layout(w: int, h: int) -> None:
     BOARD_SIZE = min(SCREEN_W, SCREEN_H) - STATUS_BAR_H - HEADER_H
     BOARD_LEFT = (SCREEN_W - BOARD_SIZE) // 2
     BOARD_TOP = HEADER_H
+
 
 # --- colors ---
 BG = pygame.Color(30, 30, 38)
@@ -65,26 +78,28 @@ FONT_BOLD = None
 # --- menu defaults ---
 MC_DEFAULT_ITERS = 10000
 MC_DEFAULT_HEURISTICS = False
-MINIMAX_DEFAULT_DEPTH = 6
+MINIMAX_DEFAULT_DEPTH = 7
 MINIMAX_DEFAULT_HEURISTICS = True
 MINIMAX_DEFAULT_PRUNING = True
 MODELS_DIR = "models/qlearning"
 DQN_MODELS_DIR = "models/dqn"
+AZ_MODELS_DIR = "models/alphazero"
+AZ_DEFAULT_SIMS = 1500
 MAX_GAMES = 9999
 
 
 def _format_model_label(name: str) -> str:
-    for prefix in ("q_table_", "dqn_"):
+    for prefix in ("q_table_", "dqn_", "az_"):
         if name.startswith(prefix):
-            ep = name[len(prefix):]
+            ep = name[len(prefix) :]
             return f"{ep} ep"
     return name
 
 
 def _parse_ep_count(name: str) -> int:
-    for prefix in ("q_table_", "dqn_"):
+    for prefix in ("q_table_", "dqn_", "az_"):
         if name.startswith(prefix):
-            ep = name[len(prefix):]
+            ep = name[len(prefix) :]
             break
     else:
         ep = name
@@ -101,7 +116,12 @@ def _parse_ep_count(name: str) -> int:
 def _list_models(directory: str = MODELS_DIR, ext: str = ".pkl") -> list[str]:
     if not os.path.isdir(directory):
         return []
-    names = [f[: -len(ext)] for f in os.listdir(directory) if f.endswith(ext)]
+    checkpoint_suffix = f".ckpt{ext}"
+    names = [
+        f[: -len(ext)]
+        for f in os.listdir(directory)
+        if f.endswith(ext) and not f.endswith(checkpoint_suffix)
+    ]
     return sorted(names, key=_parse_ep_count)
 
 
@@ -109,6 +129,25 @@ def _compute_ai_move(
     player: Player, board_snapshot: Board, out_q: "queue.Queue"
 ) -> None:
     from time import perf_counter
+    import os
+    import random
+
+    # Forked subprocesses inherit the parent's PRNG state, so without reseeding
+    # every AI turn would replay the same "random" choices (identical games).
+    seed = int.from_bytes(os.urandom(8), "big")
+    random.seed(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed & 0xFFFFFFFF)
+    except ImportError:
+        pass
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+    except ImportError:
+        pass
 
     start = perf_counter()
     move = player.get_move(board_snapshot)
@@ -243,7 +282,12 @@ def draw_series_result(
         bar_h = 24
         bar_x = cx - bar_w // 2
         bar_y = card_rect.y + 290
-        _draw_rounded_rect(screen, pygame.Color(25, 25, 35), pygame.Rect(bar_x, bar_y, bar_w, bar_h), 12)
+        _draw_rounded_rect(
+            screen,
+            pygame.Color(25, 25, 35),
+            pygame.Rect(bar_x, bar_y, bar_w, bar_h),
+            12,
+        )
         drawn = 0
         for wins, color in ((x_wins, X_COLOR), (o_wins, O_COLOR), (draws, LBL_COLOR)):
             seg_w = int(bar_w * wins / total)
@@ -252,7 +296,9 @@ def draw_series_result(
                 pygame.draw.rect(screen, color, seg_rect)
                 drawn += seg_w
 
-    note_surf = note_font.render("Click or press any key to return to menu", True, LBL_COLOR)
+    note_surf = note_font.render(
+        "Click or press any key to return to menu", True, LBL_COLOR
+    )
     screen.blit(note_surf, (cx - note_surf.get_width() // 2, card_rect.bottom - 50))
 
 
@@ -284,8 +330,20 @@ def render_inner_board(board: Board, size: int) -> pygame.Surface:
             cy = i * cell + cell // 2
             pad = cell // 2 - max(10, m - 2)
             if piece == Piece.X:
-                pygame.draw.line(surface, X_COLOR, (cx - pad, cy - pad), (cx + pad, cy + pad), width=6)
-                pygame.draw.line(surface, X_COLOR, (cx - pad, cy + pad), (cx + pad, cy - pad), width=6)
+                pygame.draw.line(
+                    surface,
+                    X_COLOR,
+                    (cx - pad, cy - pad),
+                    (cx + pad, cy + pad),
+                    width=6,
+                )
+                pygame.draw.line(
+                    surface,
+                    X_COLOR,
+                    (cx - pad, cy + pad),
+                    (cx + pad, cy - pad),
+                    width=6,
+                )
             else:
                 pygame.draw.circle(surface, O_COLOR, (cx, cy), pad, width=6)
 
@@ -297,12 +355,24 @@ def draw_labels(screen: pygame.Surface, big_cell: int) -> None:
     # top header
     header_rect = pygame.Rect(BOARD_LEFT, 0, BOARD_SIZE, HEADER_H)
     pygame.draw.rect(screen, BAR_BG, header_rect)
-    pygame.draw.line(screen, BORDER, (BOARD_LEFT, HEADER_H - 1), (BOARD_LEFT + BOARD_SIZE, HEADER_H - 1), 1)
+    pygame.draw.line(
+        screen,
+        BORDER,
+        (BOARD_LEFT, HEADER_H - 1),
+        (BOARD_LEFT + BOARD_SIZE, HEADER_H - 1),
+        1,
+    )
 
     # left sidebar
     sidebar_rect = pygame.Rect(BOARD_LEFT - SIDEBAR_W, BOARD_TOP, SIDEBAR_W, BOARD_SIZE)
     pygame.draw.rect(screen, BAR_BG, sidebar_rect)
-    pygame.draw.line(screen, BORDER, (BOARD_LEFT - 1, BOARD_TOP), (BOARD_LEFT - 1, BOARD_TOP + BOARD_SIZE), 1)
+    pygame.draw.line(
+        screen,
+        BORDER,
+        (BOARD_LEFT - 1, BOARD_TOP),
+        (BOARD_LEFT - 1, BOARD_TOP + BOARD_SIZE),
+        1,
+    )
 
     for c in range(3):
         text = lbl_font.render(str(c + 1), True, LBL_COLOR)
@@ -346,8 +416,16 @@ def draw_main_board(
     for i in range(1, 3):
         yy = BOARD_TOP + i * inner_size
         xx = BOARD_LEFT + i * inner_size
-        pygame.draw.rect(screen, LINE_COLOR, pygame.Rect(BOARD_LEFT, yy - DIV_W // 2, BOARD_SIZE, DIV_W))
-        pygame.draw.rect(screen, LINE_COLOR, pygame.Rect(xx - DIV_W // 2, BOARD_TOP, DIV_W, BOARD_SIZE))
+        pygame.draw.rect(
+            screen,
+            LINE_COLOR,
+            pygame.Rect(BOARD_LEFT, yy - DIV_W // 2, BOARD_SIZE, DIV_W),
+        )
+        pygame.draw.rect(
+            screen,
+            LINE_COLOR,
+            pygame.Rect(xx - DIV_W // 2, BOARD_TOP, DIV_W, BOARD_SIZE),
+        )
 
     pad_big = inner_size // 2 - 18
     for r in range(3):
@@ -362,8 +440,20 @@ def draw_main_board(
             dim.fill((15, 15, 20, 100))
             screen.blit(dim, (BOARD_LEFT + c * inner_size, BOARD_TOP + r * inner_size))
             if val == Piece.X:
-                pygame.draw.line(screen, X_COLOR, (cx - pad_big, cy - pad_big), (cx + pad_big, cy + pad_big), width=12)
-                pygame.draw.line(screen, X_COLOR, (cx - pad_big, cy + pad_big), (cx + pad_big, cy - pad_big), width=12)
+                pygame.draw.line(
+                    screen,
+                    X_COLOR,
+                    (cx - pad_big, cy - pad_big),
+                    (cx + pad_big, cy + pad_big),
+                    width=12,
+                )
+                pygame.draw.line(
+                    screen,
+                    X_COLOR,
+                    (cx - pad_big, cy + pad_big),
+                    (cx + pad_big, cy - pad_big),
+                    width=12,
+                )
             else:
                 pygame.draw.circle(screen, O_COLOR, (cx, cy), pad_big, width=12)
 
@@ -407,24 +497,46 @@ def draw_status_bar(
 
     # draw active indicator dot
     if current is p1:
-        pygame.draw.circle(screen, p1_col, (pad + p1_label.get_width() + 14, y0 + 14 + p1_label.get_height() // 2), dot_radius)
+        pygame.draw.circle(
+            screen,
+            p1_col,
+            (pad + p1_label.get_width() + 14, y0 + 14 + p1_label.get_height() // 2),
+            dot_radius,
+        )
     else:
-        pygame.draw.circle(screen, p2_col, (pad + p2_label.get_width() + 14, y0 + 14 + p2_label.get_height() + 6 + p2_label.get_height() // 2), dot_radius)
+        pygame.draw.circle(
+            screen,
+            p2_col,
+            (
+                pad + p2_label.get_width() + 14,
+                y0 + 14 + p2_label.get_height() + 6 + p2_label.get_height() // 2,
+            ),
+            dot_radius,
+        )
 
     # center: restriction
     rest_text = "Any" if restriction is None else idx_to_label(restriction)
     rest_label = FONT.render(f"Target: {rest_text}", True, LBL_COLOR)
     mid_x = SCREEN_W // 2 - rest_label.get_width() // 2
-    screen.blit(rest_label, (mid_x, y0 + STATUS_BAR_H // 2 - rest_label.get_height() // 2))
+    screen.blit(
+        rest_label, (mid_x, y0 + STATUS_BAR_H // 2 - rest_label.get_height() // 2)
+    )
 
     # right side
     right_x = SCREEN_W - pad
     if score is not None and total_games > 1:
         x_wins, o_wins, draws = score
-        game_line = score_font.render(f"Game {game_num} / {total_games}", True, LBL_COLOR)
-        score_line = score_font.render(f"X: {x_wins}   O: {o_wins}   Draw: {draws}", True, LBL_COLOR)
+        game_line = score_font.render(
+            f"Game {game_num} / {total_games}", True, LBL_COLOR
+        )
+        score_line = score_font.render(
+            f"X: {x_wins}   O: {o_wins}   Draw: {draws}", True, LBL_COLOR
+        )
         screen.blit(game_line, (right_x - game_line.get_width(), y0 + 14))
-        screen.blit(score_line, (right_x - score_line.get_width(), y0 + 14 + game_line.get_height() + 6))
+        screen.blit(
+            score_line,
+            (right_x - score_line.get_width(), y0 + 14 + game_line.get_height() + 6),
+        )
 
     # warning / thinking
     warn_y = y0 + STATUS_BAR_H // 2
@@ -433,7 +545,9 @@ def draw_status_bar(
         if total_games > 1:
             screen.blit(warn, (SCREEN_W // 2 - warn.get_width() // 2, y0 + 14))
         else:
-            screen.blit(warn, (right_x - warn.get_width(), warn_y - warn.get_height() // 2))
+            screen.blit(
+                warn, (right_x - warn.get_width(), warn_y - warn.get_height() // 2)
+            )
 
     if thinking:
         dots = "." * (int(time.time() * 3) % 4)
@@ -441,7 +555,9 @@ def draw_status_bar(
         if total_games > 1:
             screen.blit(msg, (SCREEN_W // 2 - msg.get_width() // 2, y0 + 14))
         else:
-            screen.blit(msg, (right_x - msg.get_width(), warn_y - msg.get_height() // 2))
+            screen.blit(
+                msg, (right_x - msg.get_width(), warn_y - msg.get_height() // 2)
+            )
 
 
 def _make_player(choice: str, piece: Piece, params: dict | None = None) -> Player:
@@ -452,7 +568,9 @@ def _make_player(choice: str, piece: Piece, params: dict | None = None) -> Playe
         return MinimaxPlayer(
             piece,
             depth_limit=int(params.get("depth", MINIMAX_DEFAULT_DEPTH)),
-            use_heuristic_eval=bool(params.get("heuristics", MINIMAX_DEFAULT_HEURISTICS)),
+            use_heuristic_eval=bool(
+                params.get("heuristics", MINIMAX_DEFAULT_HEURISTICS)
+            ),
             use_pruning=bool(params.get("pruning", MINIMAX_DEFAULT_PRUNING)),
         )
     if choice == "mcts":
@@ -479,14 +597,35 @@ def _make_player(choice: str, piece: Piece, params: dict | None = None) -> Playe
                 p.name = f"DQN ({_format_model_label(model_name)})"
                 return p
         return DQNPlayer(piece=piece, epsilon=0.0)
+    if choice == "alphazero":
+        model_name = params.get("model")
+        sims = int(params.get("sims", AZ_DEFAULT_SIMS))
+        if model_name:
+            path = os.path.join(AZ_MODELS_DIR, f"{model_name}.pt")
+            if os.path.exists(path):
+                p = AlphaZeroPlayer.load(path, piece=piece, num_simulations=sims)
+                p.name = f"AlphaZero ({_format_model_label(model_name)})"
+                return p
+        return AlphaZeroPlayer(piece=piece, num_simulations=sims)
     raise ValueError(f"Unknown player choice: {choice}")
 
 
 # ─── Menu UI Components ───────────────────────────────────────────────
 
+
 class _Button:
     """Simple clickable button for the menu."""
-    def __init__(self, rect, label, font=None, color=None, hover_color=None, text_color=None, radius=8):
+
+    def __init__(
+        self,
+        rect,
+        label,
+        font=None,
+        color=None,
+        hover_color=None,
+        text_color=None,
+        radius=8,
+    ):
         self.rect = pygame.Rect(rect)
         self.label = label
         self.font = font
@@ -510,8 +649,13 @@ class _Button:
 
         f = self.font or FONT
         text = f.render(self.label, True, tc)
-        surface.blit(text, (self.rect.centerx - text.get_width() // 2,
-                            self.rect.centery - text.get_height() // 2))
+        surface.blit(
+            text,
+            (
+                self.rect.centerx - text.get_width() // 2,
+                self.rect.centery - text.get_height() // 2,
+            ),
+        )
 
     def clicked(self, pos):
         return self.rect.collidepoint(pos)
@@ -520,6 +664,7 @@ class _Button:
 def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
     ql_models = _list_models(MODELS_DIR, ".pkl")
     dqn_models = _list_models(DQN_MODELS_DIR, ".pt")
+    az_models = _list_models(AZ_MODELS_DIR, ".pt")
     options = [
         {"label": "Human", "key": "human", "params": {}},
         {
@@ -546,24 +691,84 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
             "key": "dqn",
             "params": {"model": dqn_models[-1] if dqn_models else None},
         },
+        {
+            "label": "AlphaZero",
+            "key": "alphazero",
+            "params": {
+                "model": az_models[-1] if az_models else None,
+                "sims": AZ_DEFAULT_SIMS,
+            },
+        },
     ]
 
     param_specs = {
         "minimax": [
-            {"name": "depth", "label": "Depth", "type": "int", "step": 1, "min": 0, "note": "affects speed"},
+            {
+                "name": "depth",
+                "label": "Depth",
+                "type": "int",
+                "step": 1,
+                "min": 0,
+                "note": "affects speed",
+            },
             {"name": "heuristics", "label": "Heuristic Eval", "type": "bool"},
-            {"name": "pruning", "label": "Alpha-Beta Pruning", "type": "bool", "note": "affects speed"},
+            {
+                "name": "pruning",
+                "label": "Alpha-Beta Pruning",
+                "type": "bool",
+                "note": "affects speed",
+            },
         ],
         "mcts": [
-            {"name": "iters", "label": "Simulations", "type": "int", "step": 100, "min": 100, "note": "affects speed"},
+            {
+                "name": "iters",
+                "label": "Simulations",
+                "type": "int",
+                "step": 100,
+                "min": 100,
+                "note": "affects speed",
+            },
         ],
         "qlearning": (
             [{"name": "model", "label": "Model", "type": "cycle", "choices": ql_models}]
-            if ql_models else []
+            if ql_models
+            else []
         ),
         "dqn": (
-            [{"name": "model", "label": "Model", "type": "cycle", "choices": dqn_models}]
-            if dqn_models else []
+            [
+                {
+                    "name": "model",
+                    "label": "Model",
+                    "type": "cycle",
+                    "choices": dqn_models,
+                }
+            ]
+            if dqn_models
+            else []
+        ),
+        "alphazero": (
+            (
+                [
+                    {
+                        "name": "model",
+                        "label": "Model",
+                        "type": "cycle",
+                        "choices": az_models,
+                    }
+                ]
+                if az_models
+                else []
+            )
+            + [
+                {
+                    "name": "sims",
+                    "label": "Simulations",
+                    "type": "int",
+                    "step": 50,
+                    "min": 10,
+                    "note": "affects speed",
+                }
+            ]
         ),
     }
 
@@ -594,7 +799,12 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
     def _get_choices():
         left_choice = options[selected[0]]["key"]
         right_choice = options[selected[1]]["key"]
-        return left_choice, params[0][left_choice], right_choice, params[1][right_choice]
+        return (
+            left_choice,
+            params[0][left_choice],
+            right_choice,
+            params[1][right_choice],
+        )
 
     def _return_result():
         lc, lp, rc, rp = _get_choices()
@@ -696,13 +906,19 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
         screen.blit(subtitle, (SCREEN_W // 2 - subtitle.get_width() // 2, 80))
 
         # Divider line
-        pygame.draw.line(screen, BORDER, (SCREEN_W // 2 - 200, 115), (SCREEN_W // 2 + 200, 115), 1)
+        pygame.draw.line(
+            screen, BORDER, (SCREEN_W // 2 - 200, 115), (SCREEN_W // 2 + 200, 115), 1
+        )
 
         # Player column headers
         p1_header = sub_font.render("Player X", True, X_COLOR)
         p2_header = sub_font.render("Player O", True, O_COLOR)
-        screen.blit(p1_header, (left_x + col_w // 2 - p1_header.get_width() // 2, top - 38))
-        screen.blit(p2_header, (right_x + col_w // 2 - p2_header.get_width() // 2, top - 38))
+        screen.blit(
+            p1_header, (left_x + col_w // 2 - p1_header.get_width() // 2, top - 38)
+        )
+        screen.blit(
+            p2_header, (right_x + col_w // 2 - p2_header.get_width() // 2, top - 38)
+        )
 
         # Algorithm selection buttons
         for idx, opt in enumerate(options):
@@ -727,8 +943,13 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
                     tc = LBL_COLOR
 
                 text = FONT.render(opt["label"], True, tc)
-                screen.blit(text, (rect.centerx - text.get_width() // 2,
-                                   rect.centery - text.get_height() // 2))
+                screen.blit(
+                    text,
+                    (
+                        rect.centerx - text.get_width() // 2,
+                        rect.centery - text.get_height() // 2,
+                    ),
+                )
 
         # ─── Parameter controls ───
         param_buttons.clear()
@@ -739,7 +960,9 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
             row_h = 32
 
             if not specs:
-                lbl = param_font.render("No parameters", True, pygame.Color(100, 105, 120))
+                lbl = param_font.render(
+                    "No parameters", True, pygame.Color(100, 105, 120)
+                )
                 screen.blit(lbl, (px + 10, y))
                 return y + row_h
 
@@ -763,7 +986,13 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
                         _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, r, 6)
                         _draw_rounded_rect(screen, CARD_BORDER, r, 6, 1)
                         s = btn_sym_font.render(sym, True, TEXT_COLOR)
-                        screen.blit(s, (r.centerx - s.get_width() // 2, r.centery - s.get_height() // 2))
+                        screen.blit(
+                            s,
+                            (
+                                r.centerx - s.get_width() // 2,
+                                r.centery - s.get_height() // 2,
+                            ),
+                        )
                         param_buttons[(player_idx, name, act)] = r
 
                     screen.blit(val_surf, (val_x, y + 4))
@@ -771,13 +1000,20 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
                 elif spec["type"] == "bool":
                     # toggle pill — right-aligned
                     pill_w, pill_h = 48, 24
-                    pill_r = pygame.Rect(px + col_w - pill_w - 12, y + 4, pill_w, pill_h)
+                    pill_r = pygame.Rect(
+                        px + col_w - pill_w - 12, y + 4, pill_w, pill_h
+                    )
                     on = p[name]
                     bg_col = GREEN if on else pygame.Color(60, 62, 75)
                     _draw_rounded_rect(screen, bg_col, pill_r, pill_h // 2)
                     knob_r = pill_h - 6
                     knob_x = pill_r.right - knob_r - 3 if on else pill_r.x + 3
-                    pygame.draw.circle(screen, TEXT_COLOR, (knob_x + knob_r // 2, pill_r.centery), knob_r // 2)
+                    pygame.draw.circle(
+                        screen,
+                        TEXT_COLOR,
+                        (knob_x + knob_r // 2, pill_r.centery),
+                        knob_r // 2,
+                    )
                     param_buttons[(player_idx, name, "toggle")] = pill_r
 
                 elif spec["type"] == "cycle":
@@ -799,7 +1035,13 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
                         _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, r, 6)
                         _draw_rounded_rect(screen, CARD_BORDER, r, 6, 1)
                         s = btn_sym_font.render(sym, True, TEXT_COLOR)
-                        screen.blit(s, (r.centerx - s.get_width() // 2, r.centery - s.get_height() // 2))
+                        screen.blit(
+                            s,
+                            (
+                                r.centerx - s.get_width() // 2,
+                                r.centery - s.get_height() // 2,
+                            ),
+                        )
                         param_buttons[(player_idx, name, act)] = r
 
                     screen.blit(val_surf, (mid_x, y + 4))
@@ -815,15 +1057,21 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
         # ─── Number of Games panel ───
         panel_w = 380
         panel_h = 130
-        panel_rect = pygame.Rect(SCREEN_W // 2 - panel_w // 2, ng_panel_y - 4, panel_w, panel_h)
+        panel_rect = pygame.Rect(
+            SCREEN_W // 2 - panel_w // 2, ng_panel_y - 4, panel_w, panel_h
+        )
         _draw_rounded_rect(screen, CARD_BG, panel_rect, 14)
         _draw_rounded_rect(screen, CARD_BORDER, panel_rect, 14, 1)
 
         ng_title = small_font.render("Number of Games", True, LBL_COLOR)
-        screen.blit(ng_title, (SCREEN_W // 2 - ng_title.get_width() // 2, ng_panel_y + 8))
+        screen.blit(
+            ng_title, (SCREEN_W // 2 - ng_title.get_width() // 2, ng_panel_y + 8)
+        )
 
         num_surf = ng_font.render(str(num_games), True, TEXT_COLOR)
-        screen.blit(num_surf, (SCREEN_W // 2 - num_surf.get_width() // 2, ng_panel_y + 40))
+        screen.blit(
+            num_surf, (SCREEN_W // 2 - num_surf.get_width() // 2, ng_panel_y + 40)
+        )
 
         for btn_rect, symbol, is_small in (
             (ng_dec5_rect, "--", True),
@@ -836,12 +1084,23 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
             _draw_rounded_rect(screen, CARD_BORDER, btn_rect, 8, 1)
             f = small_btn_font if is_small else btn_sym_font
             sym = f.render(symbol, True, TEXT_COLOR)
-            screen.blit(sym, (btn_rect.centerx - sym.get_width() // 2,
-                              btn_rect.centery - sym.get_height() // 2))
+            screen.blit(
+                sym,
+                (
+                    btn_rect.centerx - sym.get_width() // 2,
+                    btn_rect.centery - sym.get_height() // 2,
+                ),
+            )
 
         # divider
         div_y = ng_panel_y + 80
-        pygame.draw.line(screen, BORDER, (panel_rect.x + 16, div_y), (panel_rect.right - 16, div_y), 1)
+        pygame.draw.line(
+            screen,
+            BORDER,
+            (panel_rect.x + 16, div_y),
+            (panel_rect.right - 16, div_y),
+            1,
+        )
 
         # auto-skip
         cb = as_toggle_rect
@@ -851,8 +1110,20 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
         _draw_rounded_rect(screen, CARD_BORDER, cb, 5, 1)
         if cb_on:
             pad = 5
-            pygame.draw.line(screen, TEXT_COLOR, (cb.x + pad, cb.centery), (cb.centerx - 1, cb.bottom - pad), 2)
-            pygame.draw.line(screen, TEXT_COLOR, (cb.centerx - 1, cb.bottom - pad), (cb.right - pad, cb.y + pad), 2)
+            pygame.draw.line(
+                screen,
+                TEXT_COLOR,
+                (cb.x + pad, cb.centery),
+                (cb.centerx - 1, cb.bottom - pad),
+                2,
+            )
+            pygame.draw.line(
+                screen,
+                TEXT_COLOR,
+                (cb.centerx - 1, cb.bottom - pad),
+                (cb.right - pad, cb.y + pad),
+                2,
+            )
         as_lbl = small_font.render("Auto-advance between games", True, LBL_COLOR)
         screen.blit(as_lbl, (cb.right + 10, cb.centery - as_lbl.get_height() // 2))
 
@@ -861,8 +1132,13 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
         btn_col = ACCENT_HOVER if hov else ACCENT
         _draw_rounded_rect(screen, btn_col, start_rect, 12)
         start_text = FONT_BOLD.render("Start Game", True, TEXT_COLOR)
-        screen.blit(start_text, (start_rect.centerx - start_text.get_width() // 2,
-                                  start_rect.centery - start_text.get_height() // 2))
+        screen.blit(
+            start_text,
+            (
+                start_rect.centerx - start_text.get_width() // 2,
+                start_rect.centery - start_text.get_height() // 2,
+            ),
+        )
 
         pygame.display.flip()
         clock.tick(60)
@@ -897,8 +1173,15 @@ def game_loop(
     screen.fill(BG)
     draw_main_board(screen, board, board.restriction)
     draw_status_bar(
-        screen, p1, p2, current, board.restriction, last_invalid_until,
-        score=score, game_num=game_num, total_games=total_games,
+        screen,
+        p1,
+        p2,
+        current,
+        board.restriction,
+        last_invalid_until,
+        score=score,
+        game_num=game_num,
+        total_games=total_games,
     )
     pygame.display.flip()
 
@@ -912,8 +1195,11 @@ def game_loop(
             if event.type == pygame.VIDEORESIZE:
                 _handle_resize(event)
                 set_layout(
-                    screen_w=SCREEN_W, screen_h=SCREEN_H,
-                    board_size=BOARD_SIZE, board_left=BOARD_LEFT, board_top=BOARD_TOP,
+                    screen_w=SCREEN_W,
+                    screen_h=SCREEN_H,
+                    board_size=BOARD_SIZE,
+                    board_left=BOARD_LEFT,
+                    board_top=BOARD_TOP,
                 )
 
         if pending_move is None:
@@ -949,15 +1235,25 @@ def game_loop(
         screen.fill(BG)
         draw_main_board(screen, board, board.restriction)
         draw_status_bar(
-            screen, p1, p2, current, board.restriction, last_invalid_until,
+            screen,
+            p1,
+            p2,
+            current,
+            board.restriction,
+            last_invalid_until,
             thinking=not isinstance(current, HumanPlayer) and pending_move is None,
-            score=score, game_num=game_num, total_games=total_games,
+            score=score,
+            game_num=game_num,
+            total_games=total_games,
         )
 
         if board.board_state != BoardState.NOT_FINISHED:
             draw_endgame_overlay(
-                screen, board.board_state,
-                score=score, game_num=game_num, total_games=total_games,
+                screen,
+                board.board_state,
+                score=score,
+                game_num=game_num,
+                total_games=total_games,
             )
             pygame.display.flip()
             if auto_skip:
@@ -1000,8 +1296,11 @@ def main() -> None:
 
         # re-sync layout in case window was resized in menu
         set_layout(
-            screen_w=SCREEN_W, screen_h=SCREEN_H,
-            board_size=BOARD_SIZE, board_left=BOARD_LEFT, board_top=BOARD_TOP,
+            screen_w=SCREEN_W,
+            screen_h=SCREEN_H,
+            board_size=BOARD_SIZE,
+            board_left=BOARD_LEFT,
+            board_top=BOARD_TOP,
         )
 
         score = [0, 0, 0]
@@ -1010,7 +1309,10 @@ def main() -> None:
 
         for game_num in range(1, num_games + 1):
             result = game_loop(
-                p1_choice, p1_params, p2_choice, p2_params,
+                p1_choice,
+                p1_params,
+                p2_choice,
+                p2_params,
                 game_num=game_num,
                 total_games=num_games,
                 score=tuple(score),

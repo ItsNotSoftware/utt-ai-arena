@@ -9,11 +9,13 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+import numpy as np
+
 from board import Board, BoardState, Move, Piece, board_state_to_piece
 
 
-class DQNNet(nn.Module):
-    """3-layer CNN → FC head.  Input: (batch, 7, 9, 9)  Output: (batch, 81)."""
+class DQNNetLegacy(nn.Module):
+    """Original 3-layer CNN architecture (for loading old models)."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -39,6 +41,51 @@ class DQNNet(nn.Module):
         return self.head(self.conv(x))
 
 
+class ResBlock(nn.Module):
+    """Pre-activation residual block: BN → ReLU → Conv → BN → ReLU → Conv + skip."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv1(torch.relu(self.bn1(x)))
+        out = self.conv2(torch.relu(self.bn2(out)))
+        return out + x
+
+
+class DQNNet(nn.Module):
+    """ResNet: initial conv → N residual blocks → FC head.
+
+    Input: (batch, 7, 9, 9)  Output: (batch, 81).
+    """
+
+    def __init__(self, num_blocks: int = 3, channels: int = 64) -> None:
+        super().__init__()
+        self.input_conv = nn.Sequential(
+            nn.Conv2d(7, channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(),
+        )
+        self.res_blocks = nn.Sequential(
+            *(ResBlock(channels) for _ in range(num_blocks))
+        )
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(channels * 81, 512),
+            nn.ReLU(),
+            nn.Linear(512, 81),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_conv(x)
+        x = self.res_blocks(x)
+        return self.head(x)
+
+
 def encode_board(board: Board, piece: Piece) -> torch.Tensor:
     """Encode board as (7, 9, 9) float tensor from *piece*'s perspective.
 
@@ -51,7 +98,7 @@ def encode_board(board: Board, piece: Piece) -> torch.Tensor:
       5  drawn inner boards                  (entire 3×3 block = 1)
       6  restriction plane                   (restricted 3×3 block = 1)
     """
-    t = torch.zeros(7, 9, 9)
+    t = np.zeros((7, 9, 9), dtype=np.float32)
     opp = Piece.O if piece == Piece.X else Piece.X
     own_won = BoardState.X_WON if piece == Piece.X else BoardState.O_WON
     opp_won = BoardState.O_WON if piece == Piece.X else BoardState.X_WON
@@ -89,7 +136,7 @@ def encode_board(board: Board, piece: Piece) -> torch.Tensor:
         rR, rC = board.restriction
         t[6, rR * 3 : rR * 3 + 3, rC * 3 : rC * 3 + 3] = 1.0
 
-    return t
+    return torch.from_numpy(t)
 
 
 def move_to_action(move: Move) -> int:
@@ -107,7 +154,7 @@ def action_to_move(action: int, piece: Piece) -> Move:
 
 def legal_mask(board: Board, piece: Piece) -> torch.Tensor:
     """Returns a (81,) tensor: 0.0 for legal actions, -inf for illegal."""
-    mask = torch.full((81,), float("-inf"))
+    mask = np.full((81,), float("-inf"), dtype=np.float32)
     for m in board.legal_moves(piece):
         mask[move_to_action(m)] = 0.0
-    return mask
+    return torch.from_numpy(mask)

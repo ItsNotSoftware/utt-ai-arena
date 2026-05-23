@@ -2,6 +2,7 @@ from __future__ import annotations
 from enum import IntEnum
 from dataclasses import dataclass
 from typing import Callable, Union, Any, Tuple, List, Set
+import random
 
 
 class Piece(IntEnum):
@@ -26,6 +27,7 @@ class UndoToken:
     prev_inner_state: "BoardState"
     prev_main_state: "BoardState"
     prev_restriction: Tuple[int, int] | None
+    removed_outer_index: int | None = None
 
 
 class BoardState(IntEnum):
@@ -33,6 +35,18 @@ class BoardState(IntEnum):
     DRAW = 1
     O_WON = 2
     X_WON = 3
+
+
+WIN_LINES = (
+    ((0, 0), (0, 1), (0, 2)),
+    ((1, 0), (1, 1), (1, 2)),
+    ((2, 0), (2, 1), (2, 2)),
+    ((0, 0), (1, 0), (2, 0)),
+    ((0, 1), (1, 1), (2, 1)),
+    ((0, 2), (1, 2), (2, 2)),
+    ((0, 0), (1, 1), (2, 2)),
+    ((2, 0), (1, 1), (0, 2)),
+)
 
 
 def board_state_to_piece(state: BoardState) -> Piece:
@@ -167,7 +181,7 @@ class Board:
             return None
         if inner.board_state != BoardState.NOT_FINISHED:
             return None
-        if inner[in_rc[0]][in_rc[1]] != Piece.EMPTY:
+        if inner.board[in_rc[0]][in_rc[1]] != Piece.EMPTY:
             return None
 
         token = UndoToken(
@@ -188,6 +202,8 @@ class Board:
                 inner.board_state != BoardState.NOT_FINISHED
                 and token.prev_inner_state == BoardState.NOT_FINISHED
             ):
+                if out_rc in self.playable_outers_set:
+                    token.removed_outer_index = self.playable_outers_list.index(out_rc)
                 self._remove_outer_if_finished(out_rc)
 
         # Update next restriction and main state
@@ -203,7 +219,7 @@ class Board:
             return
 
         # restore piece to EMPTY
-        inner[in_rc[0]][in_rc[1]] = Piece.EMPTY
+        inner.board[in_rc[0]][in_rc[1]] = Piece.EMPTY
         if inner.is_inner:
             inner.empty_cells.add(in_rc)
 
@@ -218,66 +234,35 @@ class Board:
                 inner.board_state == BoardState.NOT_FINISHED
                 and out_rc not in self.playable_outers_set
             ):
-                self._add_outer_if_playable(out_rc)
+                self.playable_outers_set.add(out_rc)
+                if (
+                    token.removed_outer_index is None
+                    or token.removed_outer_index >= len(self.playable_outers_list)
+                ):
+                    self.playable_outers_list.append(out_rc)
+                else:
+                    self.playable_outers_list.insert(token.removed_outer_index, out_rc)
 
     def get_game_state(self) -> BoardState:
         """Computes the state of this board (win/draw/playing)."""
-        x_won = 3
-        o_won = -3
         b = self.board
 
         if self.is_inner:
-            # lines + columns
-            for i in range(3):
-                line_sum = b[i][0].value + b[i][1].value + b[i][2].value
-                col_sum = b[0][i].value + b[1][i].value + b[2][i].value
-                if line_sum == x_won or col_sum == x_won:
-                    return BoardState.X_WON
-                if line_sum == o_won or col_sum == o_won:
-                    return BoardState.O_WON
-
-            # diagonals
-            diag1 = b[0][0].value + b[1][1].value + b[2][2].value
-            diag2 = b[2][0].value + b[1][1].value + b[0][2].value
-            if diag1 == x_won or diag2 == x_won:
-                return BoardState.X_WON
-            if diag1 == o_won or diag2 == o_won:
-                return BoardState.O_WON
+            for (a, b1, c) in WIN_LINES:
+                p = b[a[0]][a[1]]
+                if p != Piece.EMPTY and p == b[b1[0]][b1[1]] == b[c[0]][c[1]]:
+                    return BoardState.X_WON if p == Piece.X else BoardState.O_WON
 
             return BoardState.NOT_FINISHED if self.empty_cells else BoardState.DRAW
 
-        # lines + columns
-        for i in range(3):
-            line_sum = (
-                board_state_to_value(b[i][0].board_state)
-                + board_state_to_value(b[i][1].board_state)
-                + board_state_to_value(b[i][2].board_state)
-            )
-            col_sum = (
-                board_state_to_value(b[0][i].board_state)
-                + board_state_to_value(b[1][i].board_state)
-                + board_state_to_value(b[2][i].board_state)
-            )
-            if line_sum == x_won or col_sum == x_won:
-                return BoardState.X_WON
-            if line_sum == o_won or col_sum == o_won:
-                return BoardState.O_WON
-
-        # diagonals
-        diag1 = (
-            board_state_to_value(b[0][0].board_state)
-            + board_state_to_value(b[1][1].board_state)
-            + board_state_to_value(b[2][2].board_state)
-        )
-        diag2 = (
-            board_state_to_value(b[2][0].board_state)
-            + board_state_to_value(b[1][1].board_state)
-            + board_state_to_value(b[0][2].board_state)
-        )
-        if diag1 == x_won or diag2 == x_won:
-            return BoardState.X_WON
-        if diag1 == o_won or diag2 == o_won:
-            return BoardState.O_WON
+        for (a, b1, c) in WIN_LINES:
+            st = b[a[0]][a[1]].board_state
+            if (
+                (st == BoardState.X_WON or st == BoardState.O_WON)
+                and st == b[b1[0]][b1[1]].board_state
+                and st == b[c[0]][c[1]].board_state
+            ):
+                return st
 
         any_empty = any(
             b[r][c].board_state == BoardState.NOT_FINISHED
@@ -312,6 +297,9 @@ class Board:
         self, piece: Piece, restriction: Tuple[int, int] | None = None
     ) -> list[Move]:
         """All valid moves given a restriction (defaults to self.restriction)."""
+        if self.board_state != BoardState.NOT_FINISHED:
+            return []
+
         moves: list[Move] = []
 
         # choose outers
@@ -329,6 +317,70 @@ class Board:
             for r, c in inner.empty_cells:
                 append(Move(piece, (R, C), (r, c)))
         return moves
+
+    def random_legal_move(
+        self, piece: Piece, restriction: Tuple[int, int] | None = None
+    ) -> Move | None:
+        """Choose a uniformly random valid move without building the full move list."""
+        if self.board_state != BoardState.NOT_FINISHED:
+            return None
+
+        use_restr = self.restriction if restriction is None else restriction
+        if use_restr is not None and use_restr in self.playable_outers_set:
+            outers = (use_restr,)
+        else:
+            outers = self.playable_outers_list
+
+        total = 0
+        board = self.board
+        for R, C in outers:
+            inner = board[R][C]
+            if inner.board_state == BoardState.NOT_FINISHED:
+                total += len(inner.empty_cells)
+        if total == 0:
+            return None
+
+        idx = random.randrange(total)
+        for R, C in outers:
+            inner = board[R][C]
+            if inner.board_state != BoardState.NOT_FINISHED:
+                continue
+            n = len(inner.empty_cells)
+            if idx >= n:
+                idx -= n
+                continue
+            for r, c in inner.empty_cells:
+                if idx == 0:
+                    return Move(piece, (R, C), (r, c))
+                idx -= 1
+        return None
+
+    def packed_key(self, turn: Piece | None = None) -> int:
+        """Compact integer key for fast transposition-table lookups."""
+        val = 0
+        if self.is_inner:
+            for r in range(3):
+                row = self.board[r]
+                for c in range(3):
+                    val = val * 3 + row[c].value + 1
+        else:
+            for R in range(3):
+                for C in range(3):
+                    inner = self.board[R][C]
+                    for r in range(3):
+                        row = inner.board[r]
+                        for c in range(3):
+                            val = val * 3 + row[c].value + 1
+            restr = (
+                0
+                if self.restriction is None
+                else self.restriction[0] * 3 + self.restriction[1] + 1
+            )
+            val = val * 10 + restr
+
+        if turn is not None:
+            val = val * 3 + turn.value + 1
+        return val
 
     def key(self, turn: Piece | None = None) -> tuple:
         """Immutable key for hashing/caching. Optionally include turn."""

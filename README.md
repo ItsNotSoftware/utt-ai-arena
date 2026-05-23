@@ -145,10 +145,27 @@ is trained to match `(π, z)` with cross-entropy + MSE loss.
 uv run training_scripts/train_alphazero.py train
 ```
 
-For stronger play, increase iterations / games / simulations:
+The default `fast` profile is tuned for an RTX 4060-class laptop GPU: one
+batched CUDA self-play process, GPU-resident replay sampling, no compile
+warmup, and moderate MCTS settings. For quicker longer runs, use `turbo`;
+for stronger play, use a larger profile
+or override the individual knobs:
 ```bash
 uv run training_scripts/train_alphazero.py train \
-    --iterations 200 --games-per-iter 100 --simulations 200 --name az_strong
+    --profile turbo --name az_turbo
+```
+
+Balanced run:
+```bash
+uv run training_scripts/train_alphazero.py train \
+    --profile balanced --name az_balanced
+```
+
+Longer run (`3,000` iterations, `96,000` self-play games; every generated
+position is stored with 8 board symmetries):
+```bash
+uv run training_scripts/train_alphazero.py train \
+    --profile strong --name az_strong
 ```
 
 **Resume** from an existing model:
@@ -163,26 +180,33 @@ uv run training_scripts/train_alphazero.py eval --model az_50it --episodes 50
 
 Models are saved to `models/alphazero/` as `.pt` files and can be selected
 in the game menu (with a tunable simulation count per move).
+At the end of training, a matplotlib diagnostic plot is shown and saved to
+`models/alphazero/<name>.training.png`. Use it to check whether eval win rate
+is still rising, whether policy/value losses have flattened, and whether the
+train loss is separating from the replay check loss.
 
 Training options:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--iterations` | 100 | Outer loop iterations (self-play → train) |
-| `--games-per-iter` | 100 | Self-play games generated each iteration |
-| `--simulations` | 200 | MCTS simulations per move during self-play |
-| `--train-steps` | 400 | Gradient steps per iteration |
-| `--batch-size` | 256 | Mini-batch size |
-| `--buffer-size` | 200000 | Replay buffer capacity (positions) |
+| `--profile` | `fast` | Default set for laptop training: `turbo`, `fast`, `balanced`, or `strong` |
+| `--iterations` | profile | Outer loop iterations (self-play → train) |
+| `--games-per-iter` | profile | Self-play games generated each iteration |
+| `--simulations` | profile | MCTS simulations per move during self-play |
+| `--train-steps` | profile | Gradient steps per iteration |
+| `--batch-size` | profile | Mini-batch size |
+| `--buffer-size` | profile | Replay buffer capacity (positions) |
+| `--augment-symmetries` | profile | Insert 1, 2, 4, or 8 symmetric versions of each self-play position |
 | `--lr` | 1e-3 | Learning rate (Adam, weight_decay 1e-4) |
 | `--dirichlet-eps` | 0.25 | Root Dirichlet noise weight (exploration) |
 | `--temperature-moves` | 15 | Plies played with τ=1 before going greedy |
-| `--workers` | auto | Parallel self-play workers for normal-sized runs (0 = single process; CUDA auto caps at 4, CPU auto caps at 8) |
-| `--eval-interval` | 5 | Quick eval vs random every N iterations (0 = off) |
-| `--eval-games` | 20 | Games per quick eval |
-| `--eval-sims` | 50 | MCTS sims per move during quick eval |
+| `--workers` | profile | Parallel self-play workers; `turbo` uses 4 workers on the local CPU/GPU |
+| `--eval-interval` | profile | Quick eval vs random every N iterations (0 = off) |
+| `--eval-games` | profile | Games per quick eval |
+| `--eval-sims` | profile | MCTS sims per move during quick eval |
 | `--load` | — | Resume from model name in `models/alphazero/` (prefers `.ckpt.pt` for full state) |
 | `--name` | auto | Output model name (default: `az_<iterations>it`) |
+| `--compile` | off | Optional `torch.compile`; off by default because warmup dominates short laptop runs |
 
 
 Implemented Algorithms
