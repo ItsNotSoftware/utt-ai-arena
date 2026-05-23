@@ -89,10 +89,12 @@ MAX_GAMES = 9999
 
 
 def _format_model_label(name: str) -> str:
+    # Strip the type prefix; the rest is already self-describing (e.g. "50k",
+    # "3000it", "turbo") and the card header tells the user which algorithm
+    # this is, so no extra unit suffix is needed.
     for prefix in ("q_table_", "dqn_", "az_"):
         if name.startswith(prefix):
-            ep = name[len(prefix) :]
-            return f"{ep} ep"
+            return name[len(prefix):]
     return name
 
 
@@ -613,166 +615,61 @@ def _make_player(choice: str, piece: Piece, params: dict | None = None) -> Playe
 # ─── Menu UI Components ───────────────────────────────────────────────
 
 
-class _Button:
-    """Simple clickable button for the menu."""
-
-    def __init__(
-        self,
-        rect,
-        label,
-        font=None,
-        color=None,
-        hover_color=None,
-        text_color=None,
-        radius=8,
-    ):
-        self.rect = pygame.Rect(rect)
-        self.label = label
-        self.font = font
-        self.color = color or BTN_BG
-        self.hover_color = hover_color or BTN_HOVER
-        self.text_color = text_color or TEXT_COLOR
-        self.radius = radius
-
-    def draw(self, surface, mouse_pos, selected=False):
-        hovered = self.rect.collidepoint(mouse_pos)
-        if selected:
-            _draw_rounded_rect(surface, ACCENT, self.rect, self.radius)
-            inner = self.rect.inflate(-4, -4)
-            _draw_rounded_rect(surface, CARD_BG, inner, self.radius - 2)
-            tc = TEXT_COLOR
-        else:
-            bg = self.hover_color if hovered else self.color
-            _draw_rounded_rect(surface, bg, self.rect, self.radius)
-            _draw_rounded_rect(surface, CARD_BORDER, self.rect, self.radius, 1)
-            tc = self.text_color
-
-        f = self.font or FONT
-        text = f.render(self.label, True, tc)
-        surface.blit(
-            text,
-            (
-                self.rect.centerx - text.get_width() // 2,
-                self.rect.centery - text.get_height() // 2,
-            ),
-        )
-
-    def clicked(self, pos):
-        return self.rect.collidepoint(pos)
+# Algorithm catalogue. Each entry has a short, human-readable hint that the
+# menu shows under the algorithm name — handy when you don't remember which
+# player is which.
+_ALGORITHMS: list[dict] = [
+    {"label": "Human",       "key": "human",      "hint": "you, with a mouse",                "defaults": {}},
+    {"label": "Minimax",     "key": "minimax",    "hint": "classical alpha-beta search",       "defaults": {"depth": MINIMAX_DEFAULT_DEPTH, "heuristics": MINIMAX_DEFAULT_HEURISTICS, "pruning": MINIMAX_DEFAULT_PRUNING}},
+    {"label": "Monte Carlo", "key": "mcts",       "hint": "UCB-guided random rollouts",        "defaults": {"iters": MC_DEFAULT_ITERS}},
+    {"label": "Q-Learning",  "key": "qlearning",  "hint": "tabular RL, pre-trained checkpoint","defaults": {"model": None}},
+    {"label": "DQN",         "key": "dqn",        "hint": "deep Q-network, pre-trained",       "defaults": {"model": None}},
+    {"label": "AlphaZero",   "key": "alphazero",  "hint": "PUCT-MCTS + policy/value net",      "defaults": {"model": None, "sims": AZ_DEFAULT_SIMS}},
+]
 
 
 def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
+    """Main menu — choose the X and O opponents, set series options, start."""
     ql_models = _list_models(MODELS_DIR, ".pkl")
     dqn_models = _list_models(DQN_MODELS_DIR, ".pt")
     az_models = _list_models(AZ_MODELS_DIR, ".pt")
-    options = [
-        {"label": "Human", "key": "human", "params": {}},
-        {
-            "label": "Minimax",
-            "key": "minimax",
-            "params": {
-                "depth": MINIMAX_DEFAULT_DEPTH,
-                "heuristics": MINIMAX_DEFAULT_HEURISTICS,
-                "pruning": MINIMAX_DEFAULT_PRUNING,
-            },
-        },
-        {
-            "label": "Monte Carlo",
-            "key": "mcts",
-            "params": {"iters": MC_DEFAULT_ITERS},
-        },
-        {
-            "label": "Q-Learning",
-            "key": "qlearning",
-            "params": {"model": ql_models[-1] if ql_models else None},
-        },
-        {
-            "label": "DQN",
-            "key": "dqn",
-            "params": {"model": dqn_models[-1] if dqn_models else None},
-        },
-        {
-            "label": "AlphaZero",
-            "key": "alphazero",
-            "params": {
-                "model": az_models[-1] if az_models else None,
-                "sims": AZ_DEFAULT_SIMS,
-            },
-        },
-    ]
+    model_pools = {"qlearning": ql_models, "dqn": dqn_models, "alphazero": az_models}
 
-    param_specs = {
+    # Resolve catalogue → concrete options with the latest model preselected.
+    options: list[dict] = []
+    for algo in _ALGORITHMS:
+        defaults = dict(algo["defaults"])
+        if "model" in defaults:
+            pool = model_pools.get(algo["key"], [])
+            defaults["model"] = pool[-1] if pool else None
+        options.append({**algo, "params": defaults})
+
+    param_specs: dict[str, list[dict]] = {
         "minimax": [
-            {
-                "name": "depth",
-                "label": "Depth",
-                "type": "int",
-                "step": 1,
-                "min": 0,
-                "note": "affects speed",
-            },
-            {"name": "heuristics", "label": "Heuristic Eval", "type": "bool"},
-            {
-                "name": "pruning",
-                "label": "Alpha-Beta Pruning",
-                "type": "bool",
-                "note": "affects speed",
-            },
+            {"name": "depth", "label": "Depth", "type": "int", "step": 1, "min": 0},
+            {"name": "heuristics", "label": "Heuristics", "type": "bool"},
+            {"name": "pruning", "label": "Pruning", "type": "bool"},
         ],
         "mcts": [
-            {
-                "name": "iters",
-                "label": "Simulations",
-                "type": "int",
-                "step": 100,
-                "min": 100,
-                "note": "affects speed",
-            },
+            {"name": "iters", "label": "Simulations", "type": "int", "step": 100, "min": 100},
         ],
         "qlearning": (
             [{"name": "model", "label": "Model", "type": "cycle", "choices": ql_models}]
-            if ql_models
-            else []
+            if ql_models else []
         ),
         "dqn": (
-            [
-                {
-                    "name": "model",
-                    "label": "Model",
-                    "type": "cycle",
-                    "choices": dqn_models,
-                }
-            ]
-            if dqn_models
-            else []
+            [{"name": "model", "label": "Model", "type": "cycle", "choices": dqn_models}]
+            if dqn_models else []
         ),
         "alphazero": (
-            (
-                [
-                    {
-                        "name": "model",
-                        "label": "Model",
-                        "type": "cycle",
-                        "choices": az_models,
-                    }
-                ]
-                if az_models
-                else []
-            )
-            + [
-                {
-                    "name": "sims",
-                    "label": "Simulations",
-                    "type": "int",
-                    "step": 50,
-                    "min": 10,
-                    "note": "affects speed",
-                }
-            ]
+            ([{"name": "model", "label": "Model", "type": "cycle", "choices": az_models}]
+             if az_models else [])
+            + [{"name": "sims", "label": "Simulations", "type": "int", "step": 50, "min": 10}]
         ),
     }
 
-    selected = [0, 0]
+    # State. Default to Human vs Minimax — more interesting than Human-vs-Human.
+    selected = [0, 1]
     params = [
         {opt["key"]: dict(opt["params"]) for opt in options},
         {opt["key"]: dict(opt["params"]) for opt in options},
@@ -780,57 +677,123 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
     num_games = 1
     auto_skip = False
 
-    title_font = pygame.font.SysFont("Segoe UI", 44, bold=True)
-    subtitle_font = pygame.font.SysFont("Segoe UI", 18)
-    sub_font = pygame.font.SysFont("Segoe UI", 24, bold=True)
-    param_font = pygame.font.SysFont("Segoe UI", 20)
-    param_font_bold = pygame.font.SysFont("Segoe UI", 20, bold=True)
-    small_font = pygame.font.SysFont("Segoe UI", 18)
-    ng_font = pygame.font.SysFont("Segoe UI", 28, bold=True)
-    btn_sym_font = pygame.font.SysFont("Segoe UI", 22, bold=True)
-    small_btn_font = pygame.font.SysFont("Segoe UI", 16, bold=True)
+    # Five font roles, used consistently across the menu.
+    f_title  = pygame.font.SysFont("Segoe UI", 48, bold=True)
+    f_cap    = pygame.font.SysFont("Segoe UI", 14, bold=True)
+    f_head   = pygame.font.SysFont("Segoe UI", 20, bold=True)
+    f_body   = pygame.font.SysFont("Segoe UI", 17)
+    f_body_b = pygame.font.SysFont("Segoe UI", 17, bold=True)
+    f_hint   = pygame.font.SysFont("Segoe UI", 13)
+    f_sym    = pygame.font.SysFont("Segoe UI", 20, bold=True)
+    f_start  = pygame.font.SysFont("Segoe UI", 22, bold=True)
+    f_count  = pygame.font.SysFont("Segoe UI", 22, bold=True)
+    f_kbd    = pygame.font.SysFont("Segoe UI", 12)
 
-    gap = 60
-    top = 200
-    opt_h = 50
-    opt_gap = 10
-    ng_btn_size = 36
+    def _result():
+        lk = options[selected[0]]["key"]
+        rk = options[selected[1]]["key"]
+        return (lk, dict(params[0][lk])), (rk, dict(params[1][rk])), num_games, auto_skip
 
-    def _get_choices():
-        left_choice = options[selected[0]]["key"]
-        right_choice = options[selected[1]]["key"]
-        return (
-            left_choice,
-            params[0][left_choice],
-            right_choice,
-            params[1][right_choice],
-        )
-
-    def _return_result():
-        lc, lp, rc, rp = _get_choices()
-        return (lc, dict(lp)), (rc, dict(rp)), num_games, auto_skip
-
-    # Build param button rects (rebuilt each frame based on current selection)
-    param_buttons = {}
+    DIM = pygame.Color(115, 120, 138)
 
     while True:
         mouse_pos = pygame.mouse.get_pos()
-        # Responsive column width: scale with window, min 340, max 440
-        col_w = max(340, min(440, (SCREEN_W - gap - 40) // 2))
-        left_x = SCREEN_W // 2 - col_w - gap // 2
-        right_x = SCREEN_W // 2 + gap // 2
-        params_y = top + len(options) * (opt_h + opt_gap) + 20
 
-        # Recalculate dynamic rects each frame
-        _cx = SCREEN_W // 2
-        ng_panel_y = SCREEN_H - 260
-        start_rect = pygame.Rect(_cx - 150, SCREEN_H - 100, 300, 56)
-        ng_dec5_rect = pygame.Rect(_cx - 140, ng_panel_y + 38, ng_btn_size, ng_btn_size)
-        ng_dec_rect = pygame.Rect(_cx - 96, ng_panel_y + 38, ng_btn_size, ng_btn_size)
-        ng_inc_rect = pygame.Rect(_cx + 60, ng_panel_y + 38, ng_btn_size, ng_btn_size)
-        ng_inc5_rect = pygame.Rect(_cx + 104, ng_panel_y + 38, ng_btn_size, ng_btn_size)
-        as_toggle_rect = pygame.Rect(_cx - 120, ng_panel_y + 88, 22, 22)
+        # ── responsive layout ──────────────────────────────────────────────
+        HDR_H = 120
+        ACTION_H = 96
+        FOOTER_H = 26
+        OUTER_PAD = 32
+        GAP_X = 24
 
+        cards_top = HDR_H
+        cards_bot = SCREEN_H - ACTION_H - FOOTER_H - 16
+        col_w = max(300, min(440, (SCREEN_W - OUTER_PAD * 2 - GAP_X) // 2))
+        col_h = max(360, cards_bot - cards_top)
+        cards_total_w = col_w * 2 + GAP_X
+        left_x = (SCREEN_W - cards_total_w) // 2
+        right_x = left_x + col_w + GAP_X
+        card_rects = (
+            pygame.Rect(left_x, cards_top, col_w, col_h),
+            pygame.Rect(right_x, cards_top, col_w, col_h),
+        )
+
+        ALGO_TOP = 50
+        ALGO_ROW_H = 34
+        ALGO_GAP = 4
+        n_algos = len(options)
+        algo_block_h = n_algos * ALGO_ROW_H + (n_algos - 1) * ALGO_GAP
+        HINT_H = 20
+        SETTINGS_TOP = ALGO_TOP + algo_block_h + HINT_H + 18
+
+        # Precompute hit rects for clicks (used by both draw and event handling).
+        algo_rects: list[list[pygame.Rect]] = [[], []]
+        for side, card in enumerate(card_rects):
+            ix = card.x + 16
+            iw = card.width - 32
+            for i in range(n_algos):
+                y = card.y + ALGO_TOP + i * (ALGO_ROW_H + ALGO_GAP)
+                algo_rects[side].append(pygame.Rect(ix, y, iw, ALGO_ROW_H))
+
+        def _build_param_rects() -> list[dict[tuple, pygame.Rect]]:
+            """Build hit rects for the currently-selected algorithm on each side.
+            Called both before event handling and again after, so a click that
+            switches algorithms doesn't leave the rects out of sync with the
+            new selection during drawing."""
+            rects: list[dict[tuple, pygame.Rect]] = [{}, {}]
+            for s, c in enumerate(card_rects):
+                ix_ = c.x + 16
+                iw_ = c.width - 32
+                ch = options[selected[s]]["key"]
+                y0_ = c.y + SETTINGS_TOP
+                for i_, sp in enumerate(param_specs.get(ch, [])):
+                    yy = y0_ + i_ * 32
+                    if sp["type"] == "int":
+                        bw_, bh_ = 26, 24
+                        inc = pygame.Rect(ix_ + iw_ - bw_, yy, bw_, bh_)
+                        dec = pygame.Rect(inc.x - 56 - bw_, yy, bw_, bh_)
+                        rects[s][(sp["name"], "dec")] = dec
+                        rects[s][(sp["name"], "inc")] = inc
+                    elif sp["type"] == "bool":
+                        pw_, ph_ = 44, 22
+                        pill = pygame.Rect(ix_ + iw_ - pw_, yy + 1, pw_, ph_)
+                        rects[s][(sp["name"], "toggle")] = pill
+                    elif sp["type"] == "cycle":
+                        bw_, bh_ = 24, 24
+                        lw = f_body.size(sp["label"])[0]
+                        dec = pygame.Rect(ix_ + lw + 14, yy, bw_, bh_)
+                        inc = pygame.Rect(ix_ + iw_ - bw_, yy, bw_, bh_)
+                        rects[s][(sp["name"], "dec")] = dec
+                        rects[s][(sp["name"], "inc")] = inc
+            return rects
+
+        param_rects = _build_param_rects()
+
+        # Action bar — games stepper (left), auto-advance toggle (middle), Start (right).
+        bar_y = SCREEN_H - ACTION_H - FOOTER_H
+        bar_h = ACTION_H - 16
+        bar_w = cards_total_w
+        bar_x = (SCREEN_W - bar_w) // 2
+        bar_rect = pygame.Rect(bar_x, bar_y, bar_w, bar_h)
+
+        games_btn = 30
+        games_y = bar_y + (bar_h - games_btn) // 2
+        games_dec = pygame.Rect(bar_x + 80, games_y, games_btn, games_btn)
+        games_inc = pygame.Rect(games_dec.right + 56, games_y, games_btn, games_btn)
+
+        as_pill_w, as_pill_h = 42, 22
+        as_pill = pygame.Rect(
+            bar_x + bar_w // 2 + 20, bar_y + (bar_h - as_pill_h) // 2,
+            as_pill_w, as_pill_h,
+        )
+
+        start_w, start_h = 170, 46
+        start_rect = pygame.Rect(
+            bar_x + bar_w - start_w - 16, bar_y + (bar_h - start_h) // 2,
+            start_w, start_h,
+        )
+
+        # ── events ─────────────────────────────────────────────────────────
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
@@ -840,305 +803,227 @@ def menu() -> tuple[tuple[str, dict], tuple[str, dict], int, bool] | None:
                 if event.key == pygame.K_ESCAPE:
                     return None
                 if event.key == pygame.K_RETURN:
-                    return _return_result()
+                    return _result()
+                if event.key == pygame.K_LEFT:
+                    num_games = max(1, num_games - 1)
+                elif event.key == pygame.K_RIGHT:
+                    num_games = min(MAX_GAMES, num_games + 1)
+                elif event.key == pygame.K_a:
+                    auto_skip = not auto_skip
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
-
-                # algorithm selection buttons
-                for idx in range(len(options)):
-                    y = top + idx * (opt_h + opt_gap)
-                    if pygame.Rect(left_x, y, col_w, opt_h).collidepoint(mx, my):
-                        selected[0] = idx
-                    if pygame.Rect(right_x, y, col_w, opt_h).collidepoint(mx, my):
-                        selected[1] = idx
-
-                # param buttons
-                for (pidx, sname, action), rect in param_buttons.items():
-                    if rect.collidepoint(mx, my):
-                        choice = options[selected[pidx]]["key"]
-                        p = params[pidx][choice]
-                        specs = param_specs.get(choice, [])
-                        spec = next((s for s in specs if s["name"] == sname), None)
-                        if spec is None:
-                            continue
+                # Snapshot the selection used to build this frame's rects, so a
+                # click that switches algorithms doesn't then try to index param
+                # rects of the *new* algorithm (which weren't built this frame).
+                frame_selected = list(selected)
+                # Parameter controls for the algorithm that was visible.
+                for side in (0, 1):
+                    choice = options[frame_selected[side]]["key"]
+                    p = params[side][choice]
+                    for spec in param_specs.get(choice, []):
+                        name = spec["name"]
                         if spec["type"] == "int":
                             step = spec.get("step", 1)
-                            min_val = spec.get("min", 0)
-                            if action == "dec":
-                                p[sname] = max(min_val, p[sname] - step)
-                            elif action == "inc":
-                                p[sname] = p[sname] + step
+                            lo = spec.get("min", 0)
+                            if param_rects[side].get((name, "dec"), None) and \
+                               param_rects[side][(name, "dec")].collidepoint(mx, my):
+                                p[name] = max(lo, p[name] - step)
+                            elif param_rects[side].get((name, "inc"), None) and \
+                                 param_rects[side][(name, "inc")].collidepoint(mx, my):
+                                p[name] = p[name] + step
                         elif spec["type"] == "bool":
-                            if action == "toggle":
-                                p[sname] = not p[sname]
+                            if param_rects[side].get((name, "toggle"), None) and \
+                               param_rects[side][(name, "toggle")].collidepoint(mx, my):
+                                p[name] = not p[name]
                         elif spec["type"] == "cycle":
                             choices = spec["choices"]
-                            if choices:
-                                cur = p[sname]
-                                ci = choices.index(cur) if cur in choices else 0
-                                if action == "dec":
-                                    p[sname] = choices[(ci - 1) % len(choices)]
-                                elif action == "inc":
-                                    p[sname] = choices[(ci + 1) % len(choices)]
-
-                # num games
-                if ng_dec5_rect.collidepoint(mx, my):
-                    num_games = max(1, num_games - 5)
-                if ng_dec_rect.collidepoint(mx, my):
+                            if not choices:
+                                continue
+                            cur = p[name]
+                            ci = choices.index(cur) if cur in choices else 0
+                            if param_rects[side].get((name, "dec"), None) and \
+                               param_rects[side][(name, "dec")].collidepoint(mx, my):
+                                p[name] = choices[(ci - 1) % len(choices)]
+                            elif param_rects[side].get((name, "inc"), None) and \
+                                 param_rects[side][(name, "inc")].collidepoint(mx, my):
+                                p[name] = choices[(ci + 1) % len(choices)]
+                # Algorithm selection — done after param clicks so switching
+                # algorithms doesn't double-fire with a stale param hit.
+                for side in (0, 1):
+                    for i, r in enumerate(algo_rects[side]):
+                        if r.collidepoint(mx, my):
+                            selected[side] = i
+                # Action bar.
+                if games_dec.collidepoint(mx, my):
                     num_games = max(1, num_games - 1)
-                if ng_inc_rect.collidepoint(mx, my):
+                if games_inc.collidepoint(mx, my):
                     num_games = min(MAX_GAMES, num_games + 1)
-                if ng_inc5_rect.collidepoint(mx, my):
-                    num_games = min(MAX_GAMES, num_games + 5)
-                if as_toggle_rect.collidepoint(mx, my):
+                if as_pill.collidepoint(mx, my):
                     auto_skip = not auto_skip
                 if start_rect.collidepoint(mx, my):
-                    return _return_result()
+                    return _result()
 
-        # ─── Draw ───
+        # The event loop may have switched algorithms; rebuild param rects so
+        # the draw section can index them by the new selection's spec names.
+        param_rects = _build_param_rects()
+
+        # ── draw ───────────────────────────────────────────────────────────
         screen.fill(BG)
 
-        # Title
-        title = title_font.render("Ultimate Tic-Tac-Toe", True, TEXT_COLOR)
-        screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, 30))
-        subtitle = subtitle_font.render("AI Arena", True, LBL_COLOR)
-        screen.blit(subtitle, (SCREEN_W // 2 - subtitle.get_width() // 2, 80))
+        # Title strip.
+        title_surf = f_title.render("Ultimate Tic-Tac-Toe", True, TEXT_COLOR)
+        screen.blit(title_surf, (SCREEN_W // 2 - title_surf.get_width() // 2, 28))
+        cap_surf = f_cap.render("A I   A R E N A", True, ACCENT_HOVER)
+        screen.blit(cap_surf, (SCREEN_W // 2 - cap_surf.get_width() // 2, 84))
 
-        # Divider line
-        pygame.draw.line(
-            screen, BORDER, (SCREEN_W // 2 - 200, 115), (SCREEN_W // 2 + 200, 115), 1
-        )
+        # Player cards.
+        for side, card in enumerate(card_rects):
+            _draw_rounded_rect(screen, CARD_BG, card, 14)
+            _draw_rounded_rect(screen, CARD_BORDER, card, 14, 1)
 
-        # Player column headers
-        p1_header = sub_font.render("Player X", True, X_COLOR)
-        p2_header = sub_font.render("Player O", True, O_COLOR)
-        screen.blit(
-            p1_header, (left_x + col_w // 2 - p1_header.get_width() // 2, top - 38)
-        )
-        screen.blit(
-            p2_header, (right_x + col_w // 2 - p2_header.get_width() // 2, top - 38)
-        )
+            piece_color = X_COLOR if side == 0 else O_COLOR
+            piece_label = "PLAYER X" if side == 0 else "PLAYER O"
+            # Coloured accent rail down the left edge of the card.
+            rail = pygame.Rect(card.x, card.y + 16, 4, card.height - 32)
+            _draw_rounded_rect(screen, piece_color, rail, 2)
 
-        # Algorithm selection buttons
-        for idx, opt in enumerate(options):
-            y = top + idx * (opt_h + opt_gap)
-            for side, sel, sx in ((0, selected[0], left_x), (1, selected[1], right_x)):
-                rect = pygame.Rect(sx, y, col_w, opt_h)
-                is_sel = sel == idx
-                hovered = rect.collidepoint(mouse_pos)
+            head_surf = f_head.render(piece_label, True, piece_color)
+            screen.blit(head_surf, (card.x + 16, card.y + 14))
 
+            sel_idx = selected[side]
+            sel_opt = options[sel_idx]
+
+            # Algorithm rows.
+            for i, opt in enumerate(options):
+                r = algo_rects[side][i]
+                is_sel = sel_idx == i
+                hovered = r.collidepoint(mouse_pos)
                 if is_sel:
-                    _draw_rounded_rect(screen, ACCENT, rect, 10)
-                    inner = rect.inflate(-4, -4)
-                    _draw_rounded_rect(screen, CARD_BG, inner, 8)
+                    _draw_rounded_rect(screen, ACCENT, r, 7)
                     tc = TEXT_COLOR
-                elif hovered:
-                    _draw_rounded_rect(screen, BTN_HOVER, rect, 10)
-                    _draw_rounded_rect(screen, CARD_BORDER, rect, 10, 1)
-                    tc = TEXT_COLOR
+                    font = f_body_b
                 else:
-                    _draw_rounded_rect(screen, BTN_BG, rect, 10)
-                    _draw_rounded_rect(screen, CARD_BORDER, rect, 10, 1)
-                    tc = LBL_COLOR
+                    bg = BTN_HOVER if hovered else BTN_BG
+                    _draw_rounded_rect(screen, bg, r, 7)
+                    tc = TEXT_COLOR if hovered else LBL_COLOR
+                    font = f_body
+                surf = font.render(opt["label"], True, tc)
+                screen.blit(surf, (r.x + 14, r.centery - surf.get_height() // 2))
 
-                text = FONT.render(opt["label"], True, tc)
-                screen.blit(
-                    text,
-                    (
-                        rect.centerx - text.get_width() // 2,
-                        rect.centery - text.get_height() // 2,
-                    ),
-                )
+            # Hint for the currently selected algorithm.
+            hint_y = card.y + ALGO_TOP + algo_block_h + 6
+            hint_surf = f_hint.render(sel_opt["hint"], True, DIM)
+            screen.blit(hint_surf, (card.x + 16, hint_y))
 
-        # ─── Parameter controls ───
-        param_buttons.clear()
+            # Divider between algorithm picker and settings.
+            div_y = card.y + SETTINGS_TOP - 14
+            pygame.draw.line(
+                screen, BORDER,
+                (card.x + 16, div_y), (card.right - 16, div_y), 1,
+            )
 
-        def _render_param_controls(player_idx, px, choice, p):
+            # Settings rows for the selected algorithm.
+            choice = sel_opt["key"]
             specs = param_specs.get(choice, [])
-            y = params_y
-            row_h = 32
-
+            y0 = card.y + SETTINGS_TOP
             if not specs:
-                lbl = param_font.render(
-                    "No parameters", True, pygame.Color(100, 105, 120)
-                )
-                screen.blit(lbl, (px + 10, y))
-                return y + row_h
+                no_surf = f_hint.render("No settings for this player.", True, DIM)
+                screen.blit(no_surf, (card.x + 16, y0 + 4))
+            else:
+                p = params[side][choice]
+                for i, spec in enumerate(specs):
+                    name = spec["name"]
+                    y = y0 + i * 32
+                    label_surf = f_body.render(spec["label"], True, LBL_COLOR)
+                    screen.blit(label_surf, (card.x + 16, y + 4))
 
-            for spec in specs:
-                name = spec["name"]
-                label = spec["label"]
+                    if spec["type"] == "int":
+                        dec_r = param_rects[side][(name, "dec")]
+                        inc_r = param_rects[side][(name, "inc")]
+                        for r, sym in ((dec_r, "−"), (inc_r, "+")):
+                            hov = r.collidepoint(mouse_pos)
+                            _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, r, 5)
+                            s = f_sym.render(sym, True, TEXT_COLOR)
+                            screen.blit(s, (r.centerx - s.get_width() // 2,
+                                            r.centery - s.get_height() // 2 - 1))
+                        val_surf = f_body_b.render(str(p[name]), True, TEXT_COLOR)
+                        mid_x = (dec_r.right + inc_r.left) // 2 - val_surf.get_width() // 2
+                        screen.blit(val_surf, (mid_x, y + 4))
 
-                lbl_surf = param_font.render(f"{label}:", True, LBL_COLOR)
-                screen.blit(lbl_surf, (px + 10, y + 4))
-
-                if spec["type"] == "int":
-                    val_surf = param_font_bold.render(str(p[name]), True, TEXT_COLOR)
-                    # buttons: [-] val [+] — right-aligned within column
-                    bw, bh = 30, 26
-                    inc_r = pygame.Rect(px + col_w - bw - 12, y + 2, bw, bh)
-                    dec_r = pygame.Rect(inc_r.x - 50 - bw, y + 2, bw, bh)
-                    val_x = dec_r.right + 25 - val_surf.get_width() // 2
-
-                    for r, sym, act in ((dec_r, "-", "dec"), (inc_r, "+", "inc")):
-                        hov = r.collidepoint(mouse_pos)
-                        _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, r, 6)
-                        _draw_rounded_rect(screen, CARD_BORDER, r, 6, 1)
-                        s = btn_sym_font.render(sym, True, TEXT_COLOR)
-                        screen.blit(
-                            s,
-                            (
-                                r.centerx - s.get_width() // 2,
-                                r.centery - s.get_height() // 2,
-                            ),
+                    elif spec["type"] == "bool":
+                        pill_r = param_rects[side][(name, "toggle")]
+                        on = bool(p[name])
+                        col = GREEN if on else pygame.Color(60, 62, 75)
+                        _draw_rounded_rect(screen, col, pill_r, pill_r.height // 2)
+                        knob_d = pill_r.height - 6
+                        knob_x = (pill_r.right - knob_d - 3) if on else (pill_r.x + 3)
+                        pygame.draw.circle(
+                            screen, TEXT_COLOR,
+                            (knob_x + knob_d // 2, pill_r.centery), knob_d // 2,
                         )
-                        param_buttons[(player_idx, name, act)] = r
 
-                    screen.blit(val_surf, (val_x, y + 4))
+                    elif spec["type"] == "cycle":
+                        choices = spec["choices"]
+                        dec_r = param_rects[side][(name, "dec")]
+                        inc_r = param_rects[side][(name, "inc")]
+                        for r, sym in ((dec_r, "<"), (inc_r, ">")):
+                            hov = r.collidepoint(mouse_pos)
+                            _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, r, 5)
+                            s = f_sym.render(sym, True, TEXT_COLOR)
+                            screen.blit(s, (r.centerx - s.get_width() // 2,
+                                            r.centery - s.get_height() // 2 - 1))
+                        raw = p[name]
+                        cur_label = _format_model_label(raw) if raw else "(none)"
+                        idx_label = ""
+                        if choices and raw in choices:
+                            idx_label = f"  {choices.index(raw) + 1}/{len(choices)}"
+                        val_text = f"{cur_label}{idx_label}"
+                        val_surf = f_body_b.render(val_text, True, TEXT_COLOR)
+                        mid_x = (dec_r.right + inc_r.left) // 2 - val_surf.get_width() // 2
+                        screen.blit(val_surf, (mid_x, y + 4))
 
-                elif spec["type"] == "bool":
-                    # toggle pill — right-aligned
-                    pill_w, pill_h = 48, 24
-                    pill_r = pygame.Rect(
-                        px + col_w - pill_w - 12, y + 4, pill_w, pill_h
-                    )
-                    on = p[name]
-                    bg_col = GREEN if on else pygame.Color(60, 62, 75)
-                    _draw_rounded_rect(screen, bg_col, pill_r, pill_h // 2)
-                    knob_r = pill_h - 6
-                    knob_x = pill_r.right - knob_r - 3 if on else pill_r.x + 3
-                    pygame.draw.circle(
-                        screen,
-                        TEXT_COLOR,
-                        (knob_x + knob_r // 2, pill_r.centery),
-                        knob_r // 2,
-                    )
-                    param_buttons[(player_idx, name, "toggle")] = pill_r
+        # Action bar.
+        _draw_rounded_rect(screen, CARD_BG, bar_rect, 14)
+        _draw_rounded_rect(screen, CARD_BORDER, bar_rect, 14, 1)
 
-                elif spec["type"] == "cycle":
-                    choices = spec["choices"]
-                    raw = p[name]
-                    current = _format_model_label(raw) if raw else "(none)"
-                    n = len(choices)
-                    val_text = f"{current}  ({n})"
-                    val_surf = param_font.render(val_text, True, TEXT_COLOR)
+        # Games stepper.
+        gl = f_cap.render("GAMES", True, DIM)
+        screen.blit(gl, (bar_x + 18, bar_y + 14))
+        for r, sym in ((games_dec, "−"), (games_inc, "+")):
+            hov = r.collidepoint(mouse_pos)
+            _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, r, 6)
+            s = f_sym.render(sym, True, TEXT_COLOR)
+            screen.blit(s, (r.centerx - s.get_width() // 2,
+                            r.centery - s.get_height() // 2 - 1))
+        ng_surf = f_count.render(str(num_games), True, TEXT_COLOR)
+        ng_x = (games_dec.right + games_inc.left) // 2 - ng_surf.get_width() // 2
+        screen.blit(ng_surf, (ng_x, games_dec.centery - ng_surf.get_height() // 2))
 
-                    bw, bh = 26, 26
-                    # < and > buttons with full column width between label and right edge
-                    dec_r = pygame.Rect(px + lbl_surf.get_width() + 20, y + 2, bw, bh)
-                    inc_r = pygame.Rect(px + col_w - bw - 12, y + 2, bw, bh)
-                    mid_x = (dec_r.right + inc_r.left) // 2 - val_surf.get_width() // 2
+        # Auto-advance toggle.
+        al = f_cap.render("AUTO-ADVANCE", True, DIM)
+        screen.blit(al, (as_pill.x - al.get_width() - 12,
+                         as_pill.centery - al.get_height() // 2))
+        on = auto_skip
+        col = GREEN if on else pygame.Color(60, 62, 75)
+        _draw_rounded_rect(screen, col, as_pill, as_pill.height // 2)
+        knob_d = as_pill.height - 6
+        knob_x = (as_pill.right - knob_d - 3) if on else (as_pill.x + 3)
+        pygame.draw.circle(screen, TEXT_COLOR,
+                           (knob_x + knob_d // 2, as_pill.centery), knob_d // 2)
 
-                    for r, sym, act in ((dec_r, "<", "dec"), (inc_r, ">", "inc")):
-                        hov = r.collidepoint(mouse_pos)
-                        _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, r, 6)
-                        _draw_rounded_rect(screen, CARD_BORDER, r, 6, 1)
-                        s = btn_sym_font.render(sym, True, TEXT_COLOR)
-                        screen.blit(
-                            s,
-                            (
-                                r.centerx - s.get_width() // 2,
-                                r.centery - s.get_height() // 2,
-                            ),
-                        )
-                        param_buttons[(player_idx, name, act)] = r
-
-                    screen.blit(val_surf, (mid_x, y + 4))
-
-                y += row_h
-            return y
-
-        left_choice = options[selected[0]]["key"]
-        right_choice = options[selected[1]]["key"]
-        _render_param_controls(0, left_x, left_choice, params[0][left_choice])
-        _render_param_controls(1, right_x, right_choice, params[1][right_choice])
-
-        # ─── Number of Games panel ───
-        panel_w = 380
-        panel_h = 130
-        panel_rect = pygame.Rect(
-            SCREEN_W // 2 - panel_w // 2, ng_panel_y - 4, panel_w, panel_h
-        )
-        _draw_rounded_rect(screen, CARD_BG, panel_rect, 14)
-        _draw_rounded_rect(screen, CARD_BORDER, panel_rect, 14, 1)
-
-        ng_title = small_font.render("Number of Games", True, LBL_COLOR)
-        screen.blit(
-            ng_title, (SCREEN_W // 2 - ng_title.get_width() // 2, ng_panel_y + 8)
-        )
-
-        num_surf = ng_font.render(str(num_games), True, TEXT_COLOR)
-        screen.blit(
-            num_surf, (SCREEN_W // 2 - num_surf.get_width() // 2, ng_panel_y + 40)
-        )
-
-        for btn_rect, symbol, is_small in (
-            (ng_dec5_rect, "--", True),
-            (ng_dec_rect, "-", False),
-            (ng_inc_rect, "+", False),
-            (ng_inc5_rect, "++", True),
-        ):
-            hov = btn_rect.collidepoint(mouse_pos)
-            _draw_rounded_rect(screen, BTN_HOVER if hov else BTN_BG, btn_rect, 8)
-            _draw_rounded_rect(screen, CARD_BORDER, btn_rect, 8, 1)
-            f = small_btn_font if is_small else btn_sym_font
-            sym = f.render(symbol, True, TEXT_COLOR)
-            screen.blit(
-                sym,
-                (
-                    btn_rect.centerx - sym.get_width() // 2,
-                    btn_rect.centery - sym.get_height() // 2,
-                ),
-            )
-
-        # divider
-        div_y = ng_panel_y + 80
-        pygame.draw.line(
-            screen,
-            BORDER,
-            (panel_rect.x + 16, div_y),
-            (panel_rect.right - 16, div_y),
-            1,
-        )
-
-        # auto-skip
-        cb = as_toggle_rect
-        cb_on = auto_skip
-        cb_bg = GREEN if cb_on else pygame.Color(55, 58, 75)
-        _draw_rounded_rect(screen, cb_bg, cb, 5)
-        _draw_rounded_rect(screen, CARD_BORDER, cb, 5, 1)
-        if cb_on:
-            pad = 5
-            pygame.draw.line(
-                screen,
-                TEXT_COLOR,
-                (cb.x + pad, cb.centery),
-                (cb.centerx - 1, cb.bottom - pad),
-                2,
-            )
-            pygame.draw.line(
-                screen,
-                TEXT_COLOR,
-                (cb.centerx - 1, cb.bottom - pad),
-                (cb.right - pad, cb.y + pad),
-                2,
-            )
-        as_lbl = small_font.render("Auto-advance between games", True, LBL_COLOR)
-        screen.blit(as_lbl, (cb.right + 10, cb.centery - as_lbl.get_height() // 2))
-
-        # ─── Start button ───
+        # Start button.
         hov = start_rect.collidepoint(mouse_pos)
-        btn_col = ACCENT_HOVER if hov else ACCENT
-        _draw_rounded_rect(screen, btn_col, start_rect, 12)
-        start_text = FONT_BOLD.render("Start Game", True, TEXT_COLOR)
-        screen.blit(
-            start_text,
-            (
-                start_rect.centerx - start_text.get_width() // 2,
-                start_rect.centery - start_text.get_height() // 2,
-            ),
-        )
+        _draw_rounded_rect(screen, ACCENT_HOVER if hov else ACCENT, start_rect, 11)
+        st_surf = f_start.render("Start", True, TEXT_COLOR)
+        screen.blit(st_surf, (start_rect.centerx - st_surf.get_width() // 2,
+                              start_rect.centery - st_surf.get_height() // 2))
+
+        # Keyboard hints in the footer.
+        kbd = "Enter: start    Esc: quit    Left/Right: games    A: auto-advance"
+        kbd_surf = f_kbd.render(kbd, True, DIM)
+        screen.blit(kbd_surf, (SCREEN_W // 2 - kbd_surf.get_width() // 2,
+                               SCREEN_H - FOOTER_H + 4))
 
         pygame.display.flip()
         clock.tick(60)

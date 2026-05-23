@@ -48,25 +48,6 @@ STATE_SHAPE = (7, 9, 9)
 NUM_ACTIONS = 81
 
 TRAINING_PROFILES: dict[str, dict[str, int | float]] = {
-    # Fastest useful training pass. Good for overnight/afternoon runs and
-    # warm-starting stronger profiles.
-    "turbo": {
-        "iterations": 1500,
-        "games_per_iter": 32,
-        "simulations": 64,
-        "train_steps": 96,
-        "batch_size": 512,
-        "buffer_size": 200_000,
-        "augment_symmetries": 8,
-        "mcts_batch_size": 1,
-        "eval_interval": 100,
-        "eval_games": 40,
-        "eval_sims": 64,
-        "workers": 4,
-        "net_channels": 32,
-        "net_blocks": 3,
-        "amp": False,
-    },
     # Fast enough to iterate on a laptop RTX 4060 without a long compile warmup.
     "fast": {
         "iterations": 80,
@@ -103,12 +84,11 @@ TRAINING_PROFILES: dict[str, dict[str, int | float]] = {
         "net_blocks": 3,
         "amp": False,
     },
-    # Longer run for strength once the fast profile has proven the setup.
-    # Recommended invocation: pass --amp to roughly halve training step time on
-    # CUDA. Leaf batching (mcts_batch_size=4) and workers=4 are on by default —
-    # benchmarked sweet spot on an RTX 4060 Laptop; >4 workers contends for the
-    # GPU, virtual-loss impact at batch=4 is negligible.
-    "strong": {
+    # Mid-size run. Trains a 64ch × 5-block net with 64 self-play sims — strong
+    # enough to draw against minimax and a good warm-start for the `strong`
+    # profile. Pass --amp on CUDA; leaf batching (mcts_batch_size=4) and
+    # workers=4 are the benchmarked sweet spot on an RTX 4060 Laptop.
+    "turbo": {
         "iterations": 3000,
         "games_per_iter": 32,
         "simulations": 64,
@@ -123,6 +103,29 @@ TRAINING_PROFILES: dict[str, dict[str, int | float]] = {
         "workers": 4,
         "net_channels": 64,
         "net_blocks": 5,
+        "amp": True,
+    },
+    # Wider/deeper net (96ch × 8 blocks) and doubled MCTS depth (128 sims).
+    # The extra sims are the main play-strength multiplier — they sharpen the
+    # self-play policy targets so the network actually learns to beat minimax,
+    # not just draw it. mcts_batch_size=8 keeps the wider-net GPU utilization
+    # high; workers=4 per the benchmarked sweet spot (re-check if you change
+    # the net width — see feedback in memory).
+    "strong": {
+        "iterations": 4500,
+        "games_per_iter": 32,
+        "simulations": 128,
+        "train_steps": 200,
+        "batch_size": 512,
+        "buffer_size": 400_000,
+        "augment_symmetries": 8,
+        "mcts_batch_size": 8,
+        "eval_interval": 50,
+        "eval_games": 40,
+        "eval_sims": 128,
+        "workers": 4,
+        "net_channels": 96,
+        "net_blocks": 8,
         "amp": True,
     },
 }
@@ -1072,13 +1075,26 @@ def _generate_selfplay(
 # ── Eval vs random ───────────────────────────────────────────────────────────
 
 
-def _quick_eval(net: AlphaZeroNet, device: torch.device, n: int, sims: int) -> float:
-    """Win rate (%) over n games, batched (all games in lockstep)."""
+def _quick_eval(
+    net: AlphaZeroNet,
+    device: torch.device,
+    n: int,
+    sims: int,
+    minimax_depth: int = 3,
+) -> tuple[float, float, float]:
+    """(win%, draw%, loss%) over n games against depth-limited minimax.
+
+    AZ moves are batched across all games in lockstep; minimax moves are run
+    sequentially per game (cheap at depth 3).
+    """
+    from player import MinimaxPlayer
+
     net.eval()
     boards = [get_board() for _ in range(n)]
     turns = [Piece.X] * n
     az_pieces = [Piece.X if g % 2 == 0 else Piece.O for g in range(n)]
-    wins = 0
+    opp_x = MinimaxPlayer(Piece.X, depth_limit=minimax_depth)
+    opp_o = MinimaxPlayer(Piece.O, depth_limit=minimax_depth)
     active = list(range(n))
     buf = _BatchBuf(n, device)
 
@@ -1094,27 +1110,32 @@ def _quick_eval(net: AlphaZeroNet, device: torch.device, n: int, sims: int) -> f
         if az_need:
             _batched_selfplay_eval_step(net, buf, boards, turns, az_need, sims)
 
-        # Random side: pick a random legal move
+        # Minimax side: sequential
         for i in active:
             if boards[i].board_state != BoardState.NOT_FINISHED:
                 continue
             if turns[i] != az_pieces[i]:
-                legal = _legal_actions(boards[i], turns[i])
-                if not legal:
+                opp = opp_x if turns[i] == Piece.X else opp_o
+                move = opp.get_move(boards[i])
+                if move is None:
                     continue
-                _apply_action(boards[i], random.choice(legal), turns[i])
+                boards[i].make_move(move)
                 turns[i] = swap_piece(turns[i])
             if boards[i].board_state == BoardState.NOT_FINISHED:
                 new_active.append(i)
         active = new_active
 
+    wins = draws = 0
     for i in range(n):
         st = boards[i].board_state
         if (st == BoardState.X_WON and az_pieces[i] == Piece.X) or (
             st == BoardState.O_WON and az_pieces[i] == Piece.O
         ):
             wins += 1
-    return wins / n * 100
+        elif st == BoardState.DRAW:
+            draws += 1
+    losses = n - wins - draws
+    return wins / n * 100, draws / n * 100, losses / n * 100
 
 
 def _batched_selfplay_eval_step(
@@ -1943,13 +1964,21 @@ def train(
 
         # ── Periodic eval ──
         eval_wr = None
+        eval_dr = None
+        eval_lr = None
         eval_dt = 0.0
         if is_eval_iter:
             ev_t0 = time.monotonic()
-            wr = _quick_eval(net, device, n=eval_games, sims=eval_sims)
+            wr, dr, lr = _quick_eval(net, device, n=eval_games, sims=eval_sims)
             eval_dt = time.monotonic() - ev_t0
-            eval_wr = wr
-            last_eval_str = f"{magenta('►')} eval vs random {bold(f'{wr:.1f}%')} win {dim(f'({eval_games} games · {eval_sims} sims)')}"
+            eval_wr, eval_dr, eval_lr = wr, dr, lr
+            last_eval_str = (
+                f"{magenta('►')} eval vs minimax d3 "
+                f"{green(bold(f'W {wr:4.1f}%'))} "
+                f"{yellow(bold(f'D {dr:4.1f}%'))} "
+                f"{red(bold(f'L {lr:4.1f}%'))} "
+                f"{dim(f'({eval_games} games · {eval_sims} sims)')}"
+            )
             print(f"    {last_eval_str}", flush=True)
 
         metrics.append(
@@ -1975,6 +2004,8 @@ def train(
                 "draw_rate": draws / total_games * 100.0,
                 "o_win_rate": wins_o / total_games * 100.0,
                 "eval_win_rate": eval_wr,
+                "eval_draw_rate": eval_dr,
+                "eval_loss_rate": eval_lr,
             }
         )
 
@@ -2037,21 +2068,19 @@ def evaluate(model_name: str, episodes: int, num_simulations: int) -> None:
     net.eval()
 
     params = sum(p.numel() for p in net.parameters())
-    print(_box("AlphaZero Eval  —  vs Random Opponent"))
+    print(_box("AlphaZero Eval  —  vs Minimax (depth 3)"))
     print()
     print(f"  {bold('Model')}    : {path}  {dim(f'({params:,} params)')}")
     print(f"  {bold('Episodes')} : {episodes:,}   {bold('Sims')}: {num_simulations}")
     print()
 
     t0 = time.monotonic()
-    wr = _quick_eval(net, device, episodes, num_simulations)
+    wr, dr, lr = _quick_eval(net, device, episodes, num_simulations)
     elapsed = time.monotonic() - t0
-    losses_pct = 100 - wr  # rough; quick_eval doesn't separate L vs D
     print(dim("  " + "─" * 52))
     print(f"  {green(bold('Wins  '))}  {_pct_bar(wr)}  {bold(f'{wr:5.1f}%')}")
-    print(
-        f"  {red(bold('L+D  '))}   {_pct_bar(losses_pct)}  {bold(f'{losses_pct:5.1f}%')}"
-    )
+    print(f"  {yellow(bold('Draws '))}  {_pct_bar(dr)}  {bold(f'{dr:5.1f}%')}")
+    print(f"  {red(bold('Losses'))}  {_pct_bar(lr)}  {bold(f'{lr:5.1f}%')}")
     print(dim("  " + "─" * 52))
     print(f"\n  {dim(_fmt_time(elapsed))}\n")
 
